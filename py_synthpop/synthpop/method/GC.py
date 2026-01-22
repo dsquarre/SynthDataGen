@@ -10,7 +10,7 @@ import scipy
 import copulas.univariate
 from copulas import multivariate
 from sklearn.preprocessing import OneHotEncoder
-from synthpop.method.helpers import (
+from .helpers import (
     validate_numerical_distributions,
     warn_missing_numerical_distributions,
     flatten_dict,
