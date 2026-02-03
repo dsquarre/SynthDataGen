@@ -1,0 +1,70 @@
+{
+    "tables": {
+        "table": {
+            "columns": {
+                "Section": {
+                    "sdtype": "categorical"
+                },
+                "D(or B)": {
+                    "sdtype": "numerical"
+                },
+                "t": {
+                    "sdtype": "numerical"
+                },
+                "2L\u00a0[mm]": {
+                    "sdtype": "numerical"
+                },
+                "r\u00a0[%]": {
+                    "sdtype": "numerical"
+                },
+                "w/c": {
+                    "sdtype": "numerical"
+                },
+                "Cement [kg/m3]": {
+                    "sdtype": "numerical"
+                },
+                "Sand [kg/m3]": {
+                    "sdtype": "numerical"
+                },
+                "RFA [kg/m3]": {
+                    "sdtype": "numerical"
+                },
+                "NCA [kg/m3]": {
+                    "sdtype": "numerical"
+                },
+                "RCA [kg/m3]": {
+                    "sdtype": "numerical"
+                },
+                "Water [kg/m3]": {
+                    "sdtype": "numerical"
+                },
+                "D/t": {
+                    "sdtype": "numerical"
+                },
+                "L/D": {
+                    "sdtype": "numerical"
+                },
+                "fcu\u00a0[MPa]": {
+                    "sdtype": "numerical"
+                },
+                "fy\u00a0[MPa]": {
+                    "sdtype": "numerical"
+                },
+                "n": {
+                    "sdtype": "numerical"
+                },
+                "Pu\u00a0[kN]": {
+                    "sdtype": "numerical"
+                },
+                "\u03bc": {
+                    "sdtype": "numerical"
+                },
+                "\u03be": {
+                    "sdtype": "numerical"
+                }
+            }
+        }
+    },
+    "relationships": [],
+    "METADATA_SPEC_VERSION": "V1"
+}
