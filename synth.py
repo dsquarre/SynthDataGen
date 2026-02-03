@@ -14,7 +14,7 @@ metadata= md_handler.get_column_dtypes(df)
 
 missingness_dict = md_handler.detect_missingness(df)
 real_df = md_handler.apply_imputation(df, missingness_dict)
-
+real_df.to_excel('imputed_dataset.xlsx', index=False)
 processor = DataProcessor(metadata)
 #Preprocess the data: transforms raw data into a numerical format
 processed_data = processor.preprocess(real_df)
