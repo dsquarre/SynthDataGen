@@ -6,6 +6,7 @@ __pycache__/
 
 # Distribution and packaging
 .Python
+datasets/
 env/
 environment/
 environment/*

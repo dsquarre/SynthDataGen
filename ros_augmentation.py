@@ -1,227 +1,183 @@
-"""Random Oversampling (ROS) with constraint validation for synthetic data augmentation."""
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, List, Tuple
 
+from scipy.stats import chi2
 
-def get_numerical_constraints(real_df: pd.DataFrame) -> Dict[str, tuple]:
+import numpy as np
+import pandas as pd
+from scipy.stats import chi2
+
+def drop_covariance_violators(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict, confidence_level=0.99) -> pd.DataFrame:
+    """
+    Drops synthetic rows that violate the multivariate covariance structure of the real data.
+    Uses Mahalanobis distance and Chi-Square distribution bounds.
+    """
+    num_cols = [c for c, d in metadata.items() if d == 'numerical' and c in real_df.columns]
+    
+    if not num_cols:
+        return synth_df
+        
+    # 1. Get the "Ground Truth" mean and covariance from the REAL data
+    real_num = real_df[num_cols].dropna()
+    
+    # Keep the mean as a Pandas Series (with column names) for fillna
+    mean_series = real_num.mean() 
+    # Extract the raw numbers for matrix math
+    mean_array = mean_series.values 
+    
+    cov_real = np.cov(real_num, rowvar=False)
+    
+    # Calculate the inverse of the covariance matrix
+    try:
+        inv_cov_real = np.linalg.inv(cov_real)
+    except np.linalg.LinAlgError:
+        print("Warning: Real covariance matrix is singular. Cannot apply Mahalanobis filter.")
+        return synth_df
+        
+    # 2. Calculate the threshold (Chi-Square critical value)
+    degrees_of_freedom = len(num_cols)
+    threshold = chi2.ppf(confidence_level, degrees_of_freedom)
+    
+    # 3. Check every SYNTHETIC row
+    # Use the Pandas Series so fillna() knows which column gets which mean
+    synth_num = synth_df[num_cols].fillna(mean_series) 
+    valid_mask = []
+    
+    for index, row in synth_num.iterrows():
+        # Difference between synthetic point and real center (using raw array)
+        diff = row.values - mean_array 
+        
+        # Mahalanobis Distance Formula
+        mahalanobis_sq = np.dot(np.dot(diff.T, inv_cov_real), diff)
+        
+        # Keep row if it falls inside the physical threshold
+        valid_mask.append(mahalanobis_sq <= threshold)
+        
+    filtered_synth_df = synth_df[valid_mask].copy()
+    
+    dropped_count = len(synth_df) - len(filtered_synth_df)
+    
+    return filtered_synth_df
+
+def get_constraints(real_df: pd.DataFrame):
     """Extract min/max constraints for numerical columns from real data."""
-    constraints = {}
-    for col in real_df.columns:
+    constraints = []
+    for i, col in enumerate(real_df.columns):
         if pd.api.types.is_numeric_dtype(real_df[col].dtype):
-            constraints[col] = (real_df[col].min(), real_df[col].max())
+            constraints.append(f'c{i} >= {real_df[col].min()}')
+            constraints.append(f'c{i} <= {real_df[col].max()}')
     return constraints
 
+def add_constraints(real_df: pd.DataFrame):
+    """Interactive loop to add custom constraints."""
+    con = get_constraints(real_df)
+    print("\nAdd constraints as an expression with column numbers (e.g., c0 > c1 * 1.5)")
+    while True:
+        ent = input("Enter constraint (or 'q' to exit): ").strip()
+        if ent.lower() == 'q':
+            break
+        if ent:
+            con.append(ent)
+    return con
 
-def validate_constraints(synth_df: pd.DataFrame, real_df: pd.DataFrame) -> pd.DataFrame:
-    """Remove synthetic rows that violate numerical constraints from real data.
-    
-    Returns filtered synthetic DataFrame with only rows within constraint ranges.
+def drop_constraint_violators(df: pd.DataFrame, constraints: list):
     """
-    constraints = get_numerical_constraints(real_df)
-    mask = pd.Series([True] * len(synth_df))
+    Remove synthetic rows that violate constraints using Vectorized Pandas Eval.
+    """
+    # 1. Map 'c0', 'c1' to actual column names wrapped in backticks 
+    # Backticks are required in Pandas if your column names have spaces (e.g. `span length`)
+    col_map = {f'c{i}': f'`{col}`' for i, col in enumerate(df.columns)}
+    # 2. Sort keys by length descending so 'c10' is replaced before 'c1'
+    sorted_keys = sorted(col_map.keys(), key=len, reverse=True)    
+    valid_mask = pd.Series(True, index=df.index)
     
-    for col, (min_val, max_val) in constraints.items():
-        if col in synth_df.columns:
-            col_mask = (synth_df[col] >= min_val) & (synth_df[col] <= max_val)
-            mask = mask & col_mask
-    
-    filtered_df = synth_df[mask].reset_index(drop=True)
+    for con in constraints:
+        parsed_con = con
+        # Replace 'c#' with actual column names
+        for key in sorted_keys:
+            parsed_con = parsed_con.replace(key, col_map[key])
+            
+        try:
+            # df.eval parses the string and evaluates it in C, returning a boolean array
+            condition_mask = df.eval(parsed_con)
+            # Use bitwise AND to keep only rows that satisfy ALL constraints
+            valid_mask = valid_mask & condition_mask
+            
+        except Exception as e:
+            print(f"Warning: Failed to evaluate constraint '{con}' -> '{parsed_con}'. Error: {e}")
+            
+    filtered_df = df[valid_mask].copy()    
     return filtered_df
 
-
-def apply_custom_constraints(synth_df: pd.DataFrame, custom_constraints: List = None) -> pd.DataFrame:
-    """Apply custom user-defined constraints to synthetic data."""
-    if not custom_constraints:
-        return synth_df
-    
-    result = synth_df.copy()
-    for constraint in custom_constraints:
-        before_len = len(result)
-        result = constraint.validate(result)
-        removed = before_len - len(result)
-        if removed > 0:
-            print(f"  Custom constraint '{constraint.name}': removed {removed} rows")
-    return result
-
-
-def apply_ros(df: pd.DataFrame, target_column: str = None, sampling_strategy: str = 'auto') -> pd.DataFrame:
-    """Apply Random Oversampling using imbalanced-learn.
-    
-    If target_column is provided and is CATEGORICAL, oversample minority classes.
-    If target_column is CONTINUOUS (numerical), use simple random oversampling (50% boost).
-    Otherwise, randomly oversample the entire dataset by 50%.
+def apply_ros(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
     """
-    try:
-        from imblearn.over_sampling import RandomOverSampler
-    except ImportError:
-        raise ImportError("imbalanced-learn not installed. Install with: pip install imbalanced-learn")
-    
-    if target_column and target_column in df.columns:
-        # Check if target is categorical or continuous
-        is_continuous = pd.api.types.is_numeric_dtype(df[target_column].dtype)
-        
-        # For continuous targets or targets with too many unique values, use simple random oversampling
-        if is_continuous or df[target_column].nunique() > 20:
-            # Simple random oversampling: duplicate 50% of rows
-            num_new_rows = int(len(df) * 0.5)
-            new_rows = df.sample(n=num_new_rows, replace=True, random_state=42)
-            result_df = pd.concat([df, new_rows], ignore_index=True)
-            return result_df.reset_index(drop=True)
-        else:
-            # Use class-based RandomOverSampler for discrete/categorical targets
-            X = df.drop(columns=[target_column])
-            y = df[target_column]
-            ros = RandomOverSampler(sampling_strategy=sampling_strategy, random_state=42)
-            X_ros, y_ros = ros.fit_resample(X, y)
-            result_df = X_ros.copy()
-            result_df[target_column] = y_ros
-            return result_df.reset_index(drop=True)
-    else:
-        # Random oversampling: duplicate 50% of rows
-        num_new_rows = int(len(df) * 0.5)
-        new_rows = df.sample(n=num_new_rows, replace=True, random_state=42)
-        result_df = pd.concat([df, new_rows], ignore_index=True)
-        return result_df
-
-
-def apply_ros_with_constraints(synth_df: pd.DataFrame, real_df: pd.DataFrame, target_column: str = None) -> pd.DataFrame:
-    """Apply ROS to synthetic data and then validate constraints against real data.
-    
-    Returns augmented synthetic dataset with only valid rows.
+    Actual Random Oversampling (ROS). 
+    Duplicates minority class rows until they match the majority class count.
     """
-    # Apply ROS
-    ros_df = apply_ros(synth_df, target_column=target_column)
-    
-    # Validate constraints
-    validated_df = validate_constraints(ros_df, real_df)
-    
-    return validated_df
+    if target_col not in df.columns:
+        print(f"Column '{target_col}' not found. Skipping ROS.")
+        return df
+    max_size = df[target_col].value_counts().max()
+    balanced_dfs = []
+    for class_name, group in df.groupby(target_col):
+        # Sample with replacement to bring this category up to max_size
+        oversampled_group = group.sample(n=max_size, replace=True, random_state=42)
+        balanced_dfs.append(oversampled_group)
+        
+    balanced_df = pd.concat(balanced_dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    return balanced_df
 
+import pandas as pd
 
-def apply_ros_with_all_constraints(synth_df: pd.DataFrame, real_df: pd.DataFrame, custom_constraints: List = None, target_column: str = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """Apply ROS and both range + custom constraints to synthetic data.
-    
-    Returns tuple of (validated_df, metadata_dict) where metadata includes:
-    - initial_rows: rows after ROS
-    - final_rows: rows after all validations
-    - rejection_rate: % of data filtered out
-    - passed_failsafe: whether rejection_rate is acceptable
+def apply_multi_col_ros(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
     """
-    # Apply ROS
-    ros_df = apply_ros(synth_df, target_column=target_column)
-    initial_count = len(ros_df)
-    
-    # Validate range constraints
-    validated_df = validate_constraints(ros_df, real_df)
-    after_range = len(validated_df)
-    
-    # Apply custom constraints
-    if custom_constraints:
-        validated_df = apply_custom_constraints(validated_df, custom_constraints)
-    
-    final_count = len(validated_df)
-    rejection_rate = 1 - (final_count / initial_count) if initial_count > 0 else 0
-    passed_failsafe = rejection_rate < 0.5  # Fail if >50% rejected
-    
-    metadata = {
-        'initial_rows': initial_count,
-        'final_rows': final_count,
-        'rejection_rate': rejection_rate,
-        'passed_failsafe': passed_failsafe,
-        'rows_filtered': initial_count - final_count
-    }
-    
-    return validated_df, metadata
-
-
-def regenerate_until_target(
-    synth_df: pd.DataFrame,
-    real_df: pd.DataFrame,
-    custom_constraints: List = None,
-    target_column: str = None,
-    target_size: int = None,
-    max_regenerations: int = 5,
-    verbose: bool = True
-) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """Regenerate synthetic data via ROS until target size is reached.
-    
-    If target_size is None, defaults to 2× real data size.
-    If most data is rejected, automatically generates more until target is reached.
-    
-    Args:
-        synth_df: Initial synthetic dataset
-        real_df: Real dataset (for constraint validation)
-        custom_constraints: User-defined constraints
-        target_column: Column for ROS balancing
-        target_size: Target number of rows (default: 2 × len(real_df))
-        max_regenerations: Max retry attempts (default: 5)
-        verbose: Print progress messages
-    
-    Returns:
-        Tuple of (final_df, metadata_dict) where metadata includes regeneration history
+    Applies Random Oversampling across one or multiple categorical columns 
+    by creating a combined cross-distribution target.
     """
-    if target_size is None:
-        target_size = len(real_df) * 2
+    df_ros = df.copy()
     
-    if verbose:
-        print(f"\n  Failsafe Mode: Target size = {target_size} rows")
+    # 1. Automatically identify all categorical columns from metadata
+    cat_cols = [col for col, dtype in metadata.items() if dtype == 'categorical' and col in df_ros.columns]
     
-    all_valid_data = []
-    regeneration_history = []
-    attempt = 0
-    total_valid = 0
-    
-    current_synth = synth_df.copy()
-    
-    while total_valid < target_size and attempt < max_regenerations:
-        attempt += 1
-        if verbose:
-            print(f"  Attempt {attempt}: Processing {len(current_synth)} rows...")
+    if not cat_cols:
+        print("No categorical columns found for ROS.")
+        return df_ros
         
-        validated_df, metadata = apply_ros_with_all_constraints(
-            current_synth, real_df, custom_constraints, target_column
-        )
-        
-        regeneration_history.append({
-            'attempt': attempt,
-            'input_rows': len(current_synth),
-            'output_rows': len(validated_df),
-            'rejection_rate': metadata['rejection_rate']
-        })
-        
-        all_valid_data.append(validated_df)
-        total_valid = sum(len(df) for df in all_valid_data)
-        
-        if verbose:
-            print(f"    → {len(validated_df)} valid rows (cumulative: {total_valid}/{target_size})")
-        
-        # If still below target and have attempts left, generate more
-        if total_valid < target_size and attempt < max_regenerations:
-            # Generate fresh synthetic data by upsampling
-            current_synth = synth_df.sample(n=len(synth_df) * 2, replace=True, random_state=42 + attempt)
+    print(f"Applying ROS on columns: {cat_cols}")
     
-    # Combine all valid data and trim to target size
-    if all_valid_data:
-        final_df = pd.concat(all_valid_data, ignore_index=True)
-        if len(final_df) > target_size:
-            final_df = final_df.sample(n=target_size, random_state=42)
-        final_df = final_df.reset_index(drop=True)
-    else:
-        final_df = pd.DataFrame()
+    # 2. If only ONE categorical column, do standard ROS
+    if len(cat_cols) == 1:
+        target_col = cat_cols[0]
+        max_size = df_ros[target_col].value_counts().max()
+        balanced_dfs = []
+        for class_name, group in df_ros.groupby(target_col):
+            oversampled_group = group.sample(n=max_size, replace=True, random_state=42)
+            balanced_dfs.append(oversampled_group)
+            
+        return pd.concat(balanced_dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+        
+    # 3. If MULTIPLE categorical columns, create a "Composite Class"
+    # Example: 'Square' + '_' + 'Crushing' -> 'Square_Crushing'
+    temp_target = '_ros_combined_class'
     
-    failsafe_metadata = {
-        'regeneration_attempts': attempt,
-        'max_attempts': max_regenerations,
-        'target_size': target_size,
-        'final_rows': len(final_df),
-        'total_regenerations': len(regeneration_history),
-        'regeneration_history': regeneration_history,
-        'target_met': len(final_df) >= target_size
-    }
+    # Convert all categorical columns to strings and join them with an underscore
+    df_ros[temp_target] = df_ros[cat_cols].astype(str).agg('_'.join, axis=1)
     
-    if verbose:
-        print(f"  Final result: {len(final_df)} rows (target was {target_size})")
-        print(f"  Target met: {'✓ YES' if failsafe_metadata['target_met'] else '✗ NO - insufficient valid data'}")
+    print(f"Original composite distribution:\n{df_ros[temp_target].value_counts()}")
     
-    return final_df, failsafe_metadata
+    # Find the maximum count among all existing combinations
+    max_size = df_ros[temp_target].value_counts().max()
+    
+    balanced_dfs = []
+    
+    # Balance based on the composite combinations
+    for class_name, group in df_ros.groupby(temp_target):
+        oversampled_group = group.sample(n=max_size, replace=True, random_state=42)
+        balanced_dfs.append(oversampled_group)
+        
+    # Combine, shuffle, and drop the temporary composite column
+    balanced_df = pd.concat(balanced_dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    balanced_df = balanced_df.drop(columns=[temp_target])
+    
+    print(f"\nNew dataset size after Multi-Column ROS: {len(balanced_df)} rows (Balanced across all combinations)")
+    return balanced_df

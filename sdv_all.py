@@ -1,57 +1,56 @@
 import pandas as pd
 import numpy as np
 import json
+import logging
+import warnings
+
+warnings.filterwarnings('ignore')
+logging.getLogger('sdv').setLevel(logging.ERROR)
+logging.getLogger('rdt').setLevel(logging.ERROR)
+logging.getLogger('copulas').setLevel(logging.ERROR)
+logging.getLogger('SingleTableSynthesizer').setLevel(logging.ERROR)
+logging.getLogger('GaussianCopulaSynthesizer').setLevel(logging.ERROR)
+logging.getLogger('CTGANSynthesizer').setLevel(logging.ERROR)
+logging.getLogger('CopulaGANSynthesizer').setLevel(logging.ERROR)
+logging.getLogger('TVAESynthesizer').setLevel(logging.ERROR)
+
 from sdv.metadata import Metadata
+from sdv.single_table import GaussianCopulaSynthesizer, CTGANSynthesizer, CopulaGANSynthesizer, TVAESynthesizer
 
-
-def run_sdv_models(df: pd.DataFrame = None, sdv_metadata_path: str = 'sdv_metadata.json', num_rows: int = 500, output_prefix: str = ''):
-    """Run SDV single-table synthesizers using Metadata loaded from a JSON file.
-
-    Returns a dict of generated DataFrames keyed by synthesizer name.
-    """
-    if df is None:
-        df = pd.read_csv('data.csv')
-        df.drop(columns=df.columns[0], inplace=True)
-        df.columns = df.columns.str.strip()
-
-    # Load SDV metadata from JSON
-    with open(sdv_metadata_path, 'r', encoding='utf-8') as f:
+def run_gaussian_copula(df, num_rows, output_prefix):
+    with open('sdv_metadata.json', 'r', encoding='utf-8') as f:
         meta_dict = json.load(f)
-    print(meta_dict)
     metadata = Metadata.load_from_dict(meta_dict)
-
-    outputs = {}
-
-    # Gaussian Copula
-    from sdv.single_table import GaussianCopulaSynthesizer
     synthesizer = GaussianCopulaSynthesizer(metadata)
     synthesizer.fit(df)
     synthetic_data = synthesizer.sample(num_rows=num_rows)
-    synthetic_data.to_excel(f'{output_prefix}gc_synthetic_data.xlsx', index=False)
-    outputs['gaussian_copula'] = synthetic_data
+    return 'gaussian_copula', synthetic_data
 
-    # CTGAN
-    from sdv.single_table import CTGANSynthesizer
+def run_ctgan(df, num_rows, output_prefix):
+    with open('sdv_metadata.json', 'r', encoding='utf-8') as f:
+        meta_dict = json.load(f)
+    metadata = Metadata.load_from_dict(meta_dict)
     synthesizer = CTGANSynthesizer(metadata)
     synthesizer.fit(df)
     synthetic_data = synthesizer.sample(num_rows=num_rows)
-    synthetic_data.to_excel(f'{output_prefix}ctgan_synthetic_data.xlsx', index=False)
-    outputs['ctgan'] = synthetic_data
+    return 'ctgan',synthetic_data
 
-    # CopulaGAN
-    from sdv.single_table import CopulaGANSynthesizer
+def run_copula_gan(df, num_rows, output_prefix):
+    with open('sdv_metadata.json', 'r', encoding='utf-8') as f:
+        meta_dict = json.load(f)
+    metadata = Metadata.load_from_dict(meta_dict)
     synthesizer = CopulaGANSynthesizer(metadata)
     synthesizer.fit(df)
     synthetic_data = synthesizer.sample(num_rows=num_rows)
-    synthetic_data.to_excel(f'{output_prefix}copula_gan_synthetic_data.xlsx', index=False)
-    outputs['copulagan'] = synthetic_data
+    synthetic_data.to_excel(f'datasets/{output_prefix}copula_gan_synthetic_data.xlsx', index=False)
+    return 'copulagan', synthetic_data
 
-    # TVAE
-    from sdv.single_table import TVAESynthesizer
+def run_tvae(df, num_rows, output_prefix):
+    with open('sdv_metadata.json', 'r', encoding='utf-8') as f:
+        meta_dict = json.load(f)
+    metadata = Metadata.load_from_dict(meta_dict)
     synthesizer = TVAESynthesizer(metadata)
     synthesizer.fit(df)
     synthetic_data = synthesizer.sample(num_rows=num_rows)
-    synthetic_data.to_excel(f'{output_prefix}tvae_synthetic_data.xlsx', index=False)
-    outputs['tvae'] = synthetic_data
-
-    return outputs
+    synthetic_data.to_excel(f'datasets/{output_prefix}tvae_synthetic_data.xlsx', index=False)
+    return 'tvae', synthetic_data
