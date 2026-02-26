@@ -2,64 +2,34 @@
     "tables": {
         "table": {
             "columns": {
-                "Section": {
+                "shape of the cross section": {
                     "sdtype": "categorical"
                 },
-                "D(or B)": {
+                "dimensions": {
                     "sdtype": "numerical"
                 },
-                "t": {
+                "span length of specimen": {
                     "sdtype": "numerical"
                 },
-                "2L\u00a0[mm]": {
+                "grade of concrete(Mpa)": {
                     "sdtype": "numerical"
                 },
-                "r\u00a0[%]": {
+                "yield strength of the steel (Mpa)": {
                     "sdtype": "numerical"
                 },
-                "w/c": {
+                "Rx2": {
                     "sdtype": "numerical"
                 },
-                "Cement [kg/m3]": {
+                "scaled stand off distance": {
                     "sdtype": "numerical"
                 },
-                "Sand [kg/m3]": {
+                "axial load ratio": {
                     "sdtype": "numerical"
                 },
-                "RFA [kg/m3]": {
+                "confinement": {
                     "sdtype": "numerical"
                 },
-                "NCA [kg/m3]": {
-                    "sdtype": "numerical"
-                },
-                "RCA [kg/m3]": {
-                    "sdtype": "numerical"
-                },
-                "Water [kg/m3]": {
-                    "sdtype": "numerical"
-                },
-                "D/t": {
-                    "sdtype": "numerical"
-                },
-                "L/D": {
-                    "sdtype": "numerical"
-                },
-                "fcu\u00a0[MPa]": {
-                    "sdtype": "numerical"
-                },
-                "fy\u00a0[MPa]": {
-                    "sdtype": "numerical"
-                },
-                "n": {
-                    "sdtype": "numerical"
-                },
-                "Pu\u00a0[kN]": {
-                    "sdtype": "numerical"
-                },
-                "\u03bc": {
-                    "sdtype": "numerical"
-                },
-                "\u03be": {
+                "peak deformation (mm)": {
                     "sdtype": "numerical"
                 }
             }
