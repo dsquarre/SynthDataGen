@@ -6,8 +6,10 @@ __pycache__/
 
 # Distribution and packaging
 .Python
-datasets/*
-plots/*
+*.csv
+*.png
+*.xlsx
+*.xls
 env/
 environment/
 environment/*
