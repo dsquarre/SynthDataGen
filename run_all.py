@@ -101,7 +101,7 @@ def generate_valid_samples(model_func, imp_df, target_size, prefix, metadata, co
     while len(valid_data) < target_size:
         n_samples = (2 ** iteration) * target_size
         model_name, temp_df = model_func(imp_df, n_samples, prefix)    
-        if target_column:    
+        if target_column:
             temp_df = apply_ros(temp_df, target_column)
         temp_df = drop_constraint_violators(temp_df, constraints)
         temp_df = drop_covariance_violators(imp_df, temp_df, metadata)
@@ -154,6 +154,8 @@ def main():
     all_results = []
     for impute_name, imp_df in imputations.items():
         outputs = {}
+        if target_column:    
+            imp_df = apply_ros(imp_df, target_column)
         for model_display_name, model_func in models.items():
             print(f"[{impute_name}] Running {model_display_name}...")
             
