@@ -98,6 +98,4 @@ ehthumbs.db
 *.env
 *.env.*
 .envrc
-datasets/data/bar_pass_prediction.csv
-example_notebooks/CART_LawSchoolAdmissionBar.ipynb
-example_notebooks/helper_functions.py
+*.csv
