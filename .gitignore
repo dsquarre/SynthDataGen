@@ -124,3 +124,5 @@ evaluation_report.xlsx
 sdv_metadata.json
 plots/*
 datasets/*.xlsx
+*.csv
+datasets/*.csv
