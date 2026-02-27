@@ -1,2 +1,8 @@
-python-synthpop
+xgboost
 sdv
+matplotlib
+scikit-learn
+pandas
+numpy
+scipy
+openpyxl

@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 
 from scipy.stats import chi2
-
 import numpy as np
 import pandas as pd
 from scipy.stats import chi2

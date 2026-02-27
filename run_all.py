@@ -1,11 +1,13 @@
 from metadata_manager import generate_metadata, interactive_edit_metadata, save_as_sdv_json
 import pandas as pd
 import numpy as np
-from synth import run_cart
+import os
+from synthpop.synth import run_cart
 from sdv_all import run_copula_gan,run_ctgan, run_gaussian_copula, run_tvae
 from ctab_gan_plus import ctabganplus
 from metrics import evaluate_all
-from ros_augmentation import apply_ros,add_constraints,drop_covariance_violators,drop_constraint_violators
+from ros import apply_ros,add_constraints,drop_covariance_violators,drop_constraint_violators
+from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import KNNImputer, IterativeImputer, MissingIndicator
 from sklearn.ensemble import RandomForestClassifier
 
@@ -113,8 +115,21 @@ def generate_valid_samples(model_func, imp_df, target_size, prefix, metadata, co
 
 
 def main():
-    print("Loading data.csv")
-    df = pd.read_csv('datasets/data.csv')
+    filename = input("Enter dataset filename in datasets/ folder (default: data.csv): ").strip()
+    if not filename:
+        filename = 'data.csv'
+
+    filepath = os.path.join('datasets', filename)
+    if not os.path.exists(filepath):
+        print(f"Error: File '{filepath}' not found.")
+        return
+
+    print(f"Loading {filename}...")
+    if filename.lower().endswith(('.xls', '.xlsx')):
+        df = pd.read_excel(filepath)
+    else:
+        df = pd.read_csv(filepath)
+
     try:
         df.drop(columns=df.columns[0], inplace=True)
     except Exception:

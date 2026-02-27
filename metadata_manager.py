@@ -6,34 +6,20 @@ import pandas as pd
 def generate_metadata(df: pd.DataFrame) -> Dict[str, str]:
     """Generate a simple column-type mapping for the dataset.
 
-    Preference order:
-    1. If synthpop's MissingDataHandler is available, use its dtype detection.
-    2. Otherwise fall back to pandas-based heuristic.
+    Maps columns to 'numerical' or 'categorical'.
+    - Numerical: Integers and Floats.
+    - Categorical: Strings, Booleans, Datetimes, etc.
 
     Returns a mapping: {column_name: 'numerical'|'categorical'}
     """
-    try:
-        from synthpop import MissingDataHandler
-        md = MissingDataHandler()
-        metadata = md.get_column_dtypes(df)
-        # md.get_column_dtypes returns a mapping for synthpop; normalize values
-        normalized = {}
-        for col, v in metadata.items():
-            typ = str(v).lower()
-            if 'num' in typ or 'int' in typ or 'float' in typ:
-                normalized[col] = 'numerical'
-            else:
-                normalized[col] = 'categorical'
-        return normalized
-    except Exception:
-        # Fallback: pandas heuristics
-        mapping = {}
-        for col in df.columns:
-            if pd.api.types.is_numeric_dtype(df[col].dtype):
-                mapping[col] = 'numerical'
-            else:
-                mapping[col] = 'categorical'
-        return mapping
+    metadata = {}
+    for col in df.columns:
+        # Check if numeric but exclude boolean (which is technically numeric in some contexts)
+        if pd.api.types.is_numeric_dtype(df[col]) and not pd.api.types.is_bool_dtype(df[col]):
+            metadata[col] = 'numerical'
+        else:
+            metadata[col] = 'categorical'
+    return metadata
 
 
 def interactive_edit_metadata(metadata: Dict[str, str]) -> Dict[str, str]:
@@ -120,9 +106,6 @@ def load_sdv_json(path: str) -> Dict[str, str]:
     cols = tables[first_table].get('columns', {})
     mapping = {}
     for col, props in cols.items():
-        sdtype = props.get('sdtype', 'categorical')
-        if sdtype == 'numerical':
-            mapping[col] = 'numerical'
-        else:
-            mapping[col] = 'categorical'
+        sdtype = props.get('sdtype')
+        mapping[col] = 'numerical' if sdtype == 'numerical' else 'categorical'
     return mapping

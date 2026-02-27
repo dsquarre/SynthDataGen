@@ -6,6 +6,9 @@ from scipy.linalg import sqrtm
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.mixture import GaussianMixture
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score
+import xgboost as xgb
 import warnings
 from plot import Plot
 warnings.filterwarnings('ignore')
@@ -90,7 +93,7 @@ def constraints_violation_rate(synth_df: pd.DataFrame, constraints: list) -> flo
     Evaluates what percentage of synthetic rows VIOLATE the provided Pandas rules.
     Lower is better (0.0 means perfect adherence to engineering rules).
     """
-    from ros_augmentation import drop_constraint_violators
+    from ros import drop_constraint_violators
     good = drop_constraint_violators(synth_df, constraints)
     violation_rate = 1.0 - (len(good) / len(synth_df))
     return violation_rate
@@ -215,11 +218,46 @@ def log_cluster(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict) -
     X_synth = synth_df[num_cols].fillna(0).values
     
     # Number of components usually kept low for N=60 datasets
-    gmm = GaussianMixture(n_components=3, covariance_type='full', random_state=42)
+    gmm = GaussianMixture(n_components=3, covariance_type='full', random_state=43)
     gmm.fit(X_real)
     
     # Mean log-likelihood of synthetic data under the real distribution
     return float(np.mean(gmm.score_samples(X_synth)))
+
+def propensity_score(real_df,synth_df,metadata):
+    real = real_df.copy()
+    fake = synth_df.copy()
+    
+    real['Target'] = 1
+    fake['Target'] = 0
+    
+    # Align columns to ensure consistency
+    common_cols = [c for c in real.columns if c in fake.columns and c != 'Target']
+    data = pd.concat([real[common_cols + ['Target']], fake[common_cols + ['Target']]], ignore_index=True)
+    
+    # Step 2: Preprocess and Split
+    X = data.drop(columns=['Target'])
+    y = data['Target']
+    
+    # One-hot encoding for categorical columns
+    categorical_cols = [col for col, dtype in metadata.items() if dtype == 'categorical' and col in X.columns]
+    if categorical_cols:
+        X = pd.get_dummies(X, columns=categorical_cols, dtype=int)
+    
+    # Split 75/25
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=47, stratify=y)
+    
+    # Step 3: Train the "Disposable" XGBoost Detective
+    # Constraint: max_depth=2 and fewer trees to prevent overfitting/memorization (more lenient)
+    model = xgb.XGBClassifier(
+        max_depth=2, n_estimators=50, eval_metric='logloss', random_state=1001
+    )
+    model.fit(X_train, y_train)
+    
+    # Step 4: Predict and Score
+    y_pred_proba = model.predict_proba(X_test)[:, 1]
+    return 1-2*abs(0.5-roc_auc_score(y_test, y_pred_proba))
+
 
 def eval(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict, constraints):
     output = {}
@@ -234,6 +272,7 @@ def eval(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict, constrai
     output['mmd_score'] = max_mean_discrepancy(real_df, synth_df, metadata)
     output['fd_score'] = frechet_distance(real_df, synth_df, metadata)
     output['log_cluster_score'] = log_cluster(real_df, synth_df, metadata)
+    output['propensity_score'] = propensity_score(real_df,synth_df,metadata)
     return output
 
 def evaluate_all(name,real_df: pd.DataFrame, outputs, metadata, constraints):
