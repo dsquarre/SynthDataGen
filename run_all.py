@@ -115,6 +115,10 @@ def generate_valid_samples(model_func, imp_df, target_size, prefix, metadata, co
 
 
 def main():
+    # Ensure output directories exist
+    os.makedirs('datasets', exist_ok=True)
+    os.makedirs('plots', exist_ok=True)
+
     filename = input("Enter dataset filename in datasets/ folder (default: data.csv): ").strip()
     if not filename:
         filename = 'data.csv'

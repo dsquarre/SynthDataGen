@@ -54,9 +54,7 @@ env.bak/
 venv.bak/
 
 # Project Specific Outputs
-evaluation_report.xlsx
-sdv_metadata.json
 plots/
 datasets/
-*.csv
-*.xlsx
+evaluation_report.xlsx
+sdv_metadata.json
