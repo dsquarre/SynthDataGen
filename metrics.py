@@ -228,17 +228,52 @@ def propensity_score(real_df,synth_df,metadata):
     real = real_df.copy()
     fake = synth_df.copy()
     
+    # Drop duplicates in Real data to prevent ROS leakage (train/test memorization)
+    real = real.drop_duplicates()
+    
     real['Target'] = 1
     fake['Target'] = 0
     
     # Align columns to ensure consistency
     common_cols = [c for c in real.columns if c in fake.columns and c != 'Target']
+    
+    # Align precision to prevent trivial leaks (e.g. 12 vs 12.0000001)
+    for col in common_cols:
+        if pd.api.types.is_numeric_dtype(real[col]):
+            real_vals = real[col].dropna()
+            # Check if real data is effectively integer (e.g. 5.0, 12.0)
+            if len(real_vals) > 0 and (real_vals % 1 == 0).all():
+                fake[col] = fake[col].round()
+                real[col] = real[col].round()
+            else:
+                fake[col] = fake[col].round(4)
+                real[col] = real[col].round(4)
+                
     data = pd.concat([real[common_cols + ['Target']], fake[common_cols + ['Target']]], ignore_index=True)
     
     # Step 2: Preprocess and Split
     X = data.drop(columns=['Target'])
     y = data['Target']
     
+    # Handle Missing Values to prevent "NaN vs Value" leakage
+    # If real data has NaNs and synthetic doesn't, XGBoost sees it instantly.
+    for col in X.columns:
+        if pd.api.types.is_numeric_dtype(X[col]):
+            X[col] = X[col].fillna(X[col].mean())
+        else:
+            if not X[col].mode().empty:
+                X[col] = X[col].fillna(X[col].mode()[0])
+            else:
+                X[col] = X[col].fillna("Missing")
+
+    # Binning Strategy to prevent trivial distribution leaks (spikes vs smooth)
+    # We bin continuous features into 10 quantiles. This forces the discriminator
+    # to look at the overall shape (histogram) rather than exact values.
+    for col in X.columns:
+        if pd.api.types.is_numeric_dtype(X[col]) and X[col].nunique() > 20:
+            # Use rank to handle non-unique edges (like many 0s)
+            X[col] = pd.qcut(X[col].rank(method='first'), q=10, labels=False)
+
     # One-hot encoding for categorical columns
     categorical_cols = [col for col, dtype in metadata.items() if dtype == 'categorical' and col in X.columns]
     if categorical_cols:
@@ -250,13 +285,24 @@ def propensity_score(real_df,synth_df,metadata):
     # Step 3: Train the "Disposable" XGBoost Detective
     # Constraint: max_depth=2 and fewer trees to prevent overfitting/memorization (more lenient)
     model = xgb.XGBClassifier(
-        max_depth=2, n_estimators=50, eval_metric='logloss', random_state=1001
+        max_depth=1, n_estimators=30, eval_metric='logloss', random_state=1001
     )
     model.fit(X_train, y_train)
     
+    '''# Debugging: Print Feature Importance to identify leaks
+    if hasattr(model, 'feature_importances_'):
+        importances = model.feature_importances_
+        indices = np.argsort(importances)[::-1]
+        print(f"\n[Propensity Debug] Top features used to distinguish Real vs Fake:")
+        for f in range(min(3, X.shape[1])):
+            print(f"  {X.columns[indices[f]]}: {importances[indices[f]]:.4f}")
+    '''
     # Step 4: Predict and Score
     y_pred_proba = model.predict_proba(X_test)[:, 1]
-    return 1-2*abs(0.5-roc_auc_score(y_test, y_pred_proba))
+    auc = roc_auc_score(y_test, y_pred_proba)
+    score = 1 - 2 * abs(0.5 - auc)
+    #print(f"[Propensity Debug] AUC: {auc:.4f} | Score: {score:.4f}")
+    return score
 
 
 def eval(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict, constraints):

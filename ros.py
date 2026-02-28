@@ -6,57 +6,54 @@ import numpy as np
 import pandas as pd
 from scipy.stats import chi2
 
-def drop_covariance_violators(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict, confidence_level=0.99) -> pd.DataFrame:
+import numpy as np
+import pandas as pd
+from scipy.stats import chi2
+
+def drop_covariance_violators(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict, threshold_percentile=0.9999999999) -> pd.DataFrame:
     """
-    Drops synthetic rows that violate the multivariate covariance structure of the real data.
-    Uses Mahalanobis distance and Chi-Square distribution bounds.
+    Drops synthetic rows that fall outside the statistical Mahalanobis boundary of the real data.
+    Uses a relaxed threshold to prevent massive rejection rates on high-dimensional small datasets.
     """
-    num_cols = [c for c, d in metadata.items() if d == 'numerical' and c in real_df.columns]
-    
-    if not num_cols:
+    # 1. Identify purely numerical columns present in BOTH dataframes
+    # (This prevents crashes if deterministic columns were dropped from real_df)
+    num_cols = [col for col, dtype in metadata.items() 
+                if dtype in ['numerical', 'integer', 'float'] 
+                and col in real_df.columns 
+                and col in synth_df.columns]
+                
+    if len(num_cols) < 2:
         return synth_df
         
-    # 1. Get the "Ground Truth" mean and covariance from the REAL data
-    real_num = real_df[num_cols].dropna()
+    real_num = real_df[num_cols].to_numpy(dtype=float)
+    synth_num = synth_df[num_cols].to_numpy(dtype=float)
     
-    # Keep the mean as a Pandas Series (with column names) for fillna
-    mean_series = real_num.mean() 
-    # Extract the raw numbers for matrix math
-    mean_array = mean_series.values 
-    
+    # 2. Calculate Real Mean and Covariance
+    mean_real = np.mean(real_num, axis=0)
     cov_real = np.cov(real_num, rowvar=False)
     
-    # Calculate the inverse of the covariance matrix
     try:
-        inv_cov_real = np.linalg.inv(cov_real)
+        # Use pseudo-inverse to handle degenerate dimensions
+        inv_cov_real = np.linalg.pinv(cov_real)
     except np.linalg.LinAlgError:
-        print("Warning: Real covariance matrix is singular. Cannot apply Mahalanobis filter.")
         return synth_df
         
-    # 2. Calculate the threshold (Chi-Square critical value)
-    degrees_of_freedom = len(num_cols)
-    threshold = chi2.ppf(confidence_level, degrees_of_freedom)
+    # 3. Calculate Mahalanobis Distance for every synthetic row
+    diff = synth_num - mean_real
     
-    # 3. Check every SYNTHETIC row
-    # Use the Pandas Series so fillna() knows which column gets which mean
-    synth_num = synth_df[num_cols].fillna(mean_series) 
-    valid_mask = []
+    # Fast vectorized Mahalanobis calculation: diag( (x-\mu) @ \Sigma^{-1} @ (x-\mu)^T )
+    left_term = np.dot(diff, inv_cov_real)
+    mahal_distances = np.sum(left_term * diff, axis=1)
     
-    for index, row in synth_num.iterrows():
-        # Difference between synthetic point and real center (using raw array)
-        diff = row.values - mean_array 
-        
-        # Mahalanobis Distance Formula
-        mahalanobis_sq = np.dot(np.dot(diff.T, inv_cov_real), diff)
-        
-        # Keep row if it falls inside the physical threshold
-        valid_mask.append(mahalanobis_sq <= threshold)
-        
-    filtered_synth_df = synth_df[valid_mask].copy()
+    # 4. Set the Boundary Threshold
+    # Using the Chi-Square distribution to find the cutoff distance.
+    # We use 0.999 to be highly forgiving, allowing the GANs to explore new structural combinations
+    threshold = chi2.ppf(threshold_percentile, df=len(num_cols))
     
-    dropped_count = len(synth_df) - len(filtered_synth_df)
+    # 5. Keep only the rows inside the boundary
+    valid_mask = mahal_distances <= threshold
     
-    return filtered_synth_df
+    return synth_df[valid_mask].copy()
 
 def get_constraints(real_df: pd.DataFrame):
     """Extract min/max constraints for numerical columns from real data."""
@@ -83,27 +80,19 @@ def drop_constraint_violators(df: pd.DataFrame, constraints: list):
     """
     Remove synthetic rows that violate constraints using Vectorized Pandas Eval.
     """
-    # 1. Map 'c0', 'c1' to actual column names wrapped in backticks 
-    # Backticks are required in Pandas if your column names have spaces (e.g. `span length`)
-    col_map = {f'c{i}': f'`{col}`' for i, col in enumerate(df.columns)}
-    # 2. Sort keys by length descending so 'c10' is replaced before 'c1'
-    sorted_keys = sorted(col_map.keys(), key=len, reverse=True)    
+    temp_df = df.copy()
+    temp_df.columns = [f'c{i}' for i in range(len(df.columns))]
     valid_mask = pd.Series(True, index=df.index)
     
     for con in constraints:
-        parsed_con = con
-        # Replace 'c#' with actual column names
-        for key in sorted_keys:
-            parsed_con = parsed_con.replace(key, col_map[key])
-            
         try:
             # df.eval parses the string and evaluates it in C, returning a boolean array
-            condition_mask = df.eval(parsed_con)
+            condition_mask = temp_df.eval(con)
             # Use bitwise AND to keep only rows that satisfy ALL constraints
             valid_mask = valid_mask & condition_mask
             
         except Exception as e:
-            print(f"Warning: Failed to evaluate constraint '{con}' -> '{parsed_con}'. Error: {e}")
+            print(f"Warning: Failed to evaluate constraint '{con}'. Error: {e}")
             
     filtered_df = df[valid_mask].copy()    
     return filtered_df

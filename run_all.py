@@ -79,8 +79,16 @@ def missing_indicator_imputation(df: pd.DataFrame) -> pd.DataFrame:
 	indicator = MissingIndicator(missing_values=np.nan)
 	indicator.fit(df)
 	indicator_cols = indicator.get_feature_names_out()
-	df_indicator = pd.DataFrame(indicator.transform(df), columns=indicator_cols, index=df.index)
-	df_imputed = pd.concat([df, df_indicator], axis=1)
+	df_indicator = pd.DataFrame(indicator.transform(df), columns=indicator_cols, index=df.index)	
+	df_filled = df.copy()
+	for col in df_filled.columns:
+		if pd.api.types.is_numeric_dtype(df_filled[col]):
+			df_filled[col] = df_filled[col].fillna(df_filled[col].median())
+		else:
+			if not df_filled[col].mode().empty:
+				df_filled[col] = df_filled[col].fillna(df_filled[col].mode()[0])
+
+	df_imputed = pd.concat([df_filled, df_indicator], axis=1)
 	return df_imputed
 
 def iterative_imputation(df: pd.DataFrame,metadata) -> pd.DataFrame:
@@ -102,11 +110,12 @@ def generate_valid_samples(model_func, imp_df, target_size, prefix, metadata, co
     
     while len(valid_data) < target_size:
         n_samples = (2 ** iteration) * target_size
+        #print(f"Generating batch size of {n_samples}.. Current valid : {len(valid_data)}")
         model_name, temp_df = model_func(imp_df, n_samples, prefix)    
         if target_column:
             temp_df = apply_ros(temp_df, target_column)
         temp_df = drop_constraint_violators(temp_df, constraints)
-        temp_df = drop_covariance_violators(imp_df, temp_df, metadata)
+        #temp_df = drop_covariance_violators(imp_df, temp_df, metadata)
         
         valid_data = pd.concat([valid_data, temp_df], ignore_index=True)
         iteration += 1
@@ -138,8 +147,27 @@ def main():
         df.drop(columns=df.columns[0], inplace=True)
     except Exception:
         pass
+    print("\nAvailable columns:")
+    for i, col in enumerate(df.columns):
+        print(f"{i}: {col}")
     df.columns = df.columns.str.strip()
-    
+    df.columns = ["".join(c if c.isalnum() else "_" for c in str(x)) for x in df.columns]
+    # Remove leading underscores
+    df.columns = [col.lstrip('_') for col in df.columns]
+    # Remove trailing underscores
+    df.columns = [col.rstrip('_') for col in df.columns]
+
+    drop_indices = input("\nEnter column indices to drop (comma-separated) or press Enter to continue: ").strip()
+    if drop_indices:
+        try:
+            indices = [int(x.strip()) for x in drop_indices.split(',') if x.strip()]
+            cols_to_drop = [df.columns[i] for i in indices if 0 <= i < len(df.columns)]
+            if cols_to_drop:
+                print(f"Dropping: {cols_to_drop}")
+                df.drop(columns=cols_to_drop, inplace=True)
+        except ValueError:
+            print("Invalid input. No columns dropped.")
+
     Dn = max(len(df), 500)
     print(f"Target synthetic dataset size: {Dn}")
     
@@ -154,6 +182,7 @@ def main():
     save_as_sdv_json(metadata, path='sdv_metadata.json')
     
     df = impute_categorical_rf(df, metadata)
+    #print(df.head())
     imputations = {
         'iter': iterative_imputation(df, metadata), 
         'knn': knn_imputation(df, metadata), 
@@ -162,35 +191,60 @@ def main():
     
     constraints = add_constraints(df)
 
-    models = {
-        'CART': lambda d, n, pfx: run_cart(d, n, pfx, metadata),
-        'Gaussian Copula': run_gaussian_copula,
-        'CTGAN': run_ctgan,
-        'CopulaGAN': run_copula_gan,
-        'TVAE': run_tvae
-    }
-
     all_results = []
     for impute_name, imp_df in imputations.items():
+        #print(imp_df.head())
         outputs = {}
         if target_column:    
             imp_df = apply_ros(imp_df, target_column)
+            
+        # Update metadata for this imputation (e.g. if MI added columns)
+        current_metadata = metadata.copy()
+        for col in imp_df.columns:
+            if col not in current_metadata:
+                current_metadata[col] = 'categorical'
+        
+        save_as_sdv_json(current_metadata, path='sdv_metadata.json')
+        #print(imp_df.head())
+        models = {
+            'CART': lambda d, n, pfx: run_cart(d, n, pfx, current_metadata),
+            'Gaussian Copula': run_gaussian_copula,
+            'CTGAN': run_ctgan,
+            'CopulaGAN': run_copula_gan,
+            'TVAE': run_tvae
+        }
+        
         for model_display_name, model_func in models.items():
             print(f"[{impute_name}] Running {model_display_name}...")
             
-            name, valid_df = generate_valid_samples(
-                model_func=model_func,
-                imp_df=imp_df,
-                target_size=Dn,
-                prefix=impute_name,
-                metadata=metadata,
-                constraints=constraints,
-                target_column=target_column
-            )
-            outputs[f"{name}_{impute_name}"] = valid_df
+            try:
+                name, valid_df = generate_valid_samples(
+                    model_func=model_func,
+                    imp_df=imp_df,
+                    target_size=Dn,
+                    prefix=impute_name,
+                    metadata=current_metadata,
+                    constraints=constraints,
+                    target_column=target_column
+                )
+                outputs[f"{name}_{impute_name}"] = valid_df
+            except Exception as e:
+                print(f"Skipping {model_display_name} due to error: {e}")
+
+        if impute_name == 'mi':
+            indicator_cols = [col for col in imp_df.columns if col not in metadata]
+            if indicator_cols:
+                print(f"Removing missing indicator columns: {indicator_cols}")
+                imp_df = imp_df.drop(columns=indicator_cols)
+                for key in outputs:
+                    outputs[key] = outputs[key].drop(columns=indicator_cols, errors='ignore')
+                for col in indicator_cols:
+                    if col in current_metadata:
+                        del current_metadata[col]
+
         print(f"Generating comparative metrics report for {impute_name} imputations...")
         # Evaluate this batch
-        batch_results = evaluate_all(impute_name, df, outputs, metadata, constraints)
+        batch_results = evaluate_all(impute_name, imp_df, outputs, current_metadata, constraints)
         all_results.extend(batch_results)
 
     #print("Skipping CTAB-GAN+ model for now...")

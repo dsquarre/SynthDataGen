@@ -19,30 +19,51 @@ def proper(X_df=None, y_df=None, random_state=None):
 def smooth(dtype, y_synth, y_real_min, y_real_max):
     # Ensure y_synth is numeric (float) before proceeding.
     y_synth = np.asarray(y_synth, dtype=float)
+    
+    # Use a boolean numpy array for faster indexing
+    indices = np.ones(len(y_synth), dtype=bool)
 
-    indices = [True for _ in range(len(y_synth))]
+    # 1. Exclude from smoothing if frequency for a single value is > 70%
+    y_synth_mode = mode(y_synth, keepdims=True)
+    # Handle different scipy versions gracefully
+    count = y_synth_mode.count[0] if isinstance(y_synth_mode.count, np.ndarray) else y_synth_mode.count
+    mode_val = y_synth_mode.mode[0] if isinstance(y_synth_mode.mode, np.ndarray) else y_synth_mode.mode
 
-    # Exclude from smoothing if frequency for a single value is higher than 70%
-    y_synth_mode = mode(y_synth)
-    if y_synth_mode.count / len(y_synth) > 0.7:
-        indices = np.logical_and(indices, y_synth != y_synth_mode.mode)
+    if count / len(y_synth) > 0.7:
+        indices = indices & (y_synth != mode_val)
 
-    # Exclude from smoothing if data are top-coded - approximate check
+    # 2. Exclude from smoothing if data are top-coded (approximate check)
     y_synth_sorted = np.sort(y_synth)
     top_coded = 10 * np.abs(y_synth_sorted[-2]) < np.abs(y_synth_sorted[-1] - y_synth_sorted[-2])
     if top_coded:
-        indices = np.logical_and(indices, y_synth != y_real_max)
+        indices = indices & (y_synth != y_real_max)
 
-    # Compute bandwidth using the provided formula
-    bw = 0.9 * len(y_synth[indices]) ** (-1/5) * np.minimum(np.std(y_synth[indices]), iqr(y_synth[indices]) / 1.34)
+    # --- THE SAFETY VALVE ---
+    valid_count = np.sum(indices)
+    if valid_count == 0:
+        # If everything was filtered out (e.g., 100% identical values), skip smoothing
+        if dtype == 'int':
+            return np.round(y_synth).astype(int)
+        return y_synth
 
-    # Apply smoothing: for values flagged by indices, sample from a normal distribution
-    y_synth[indices] = np.array([np.random.normal(loc=value, scale=bw) for value in y_synth[indices]])
+    # 3. Compute bandwidth 
+    bw = 0.9 * (valid_count ** (-1/5)) * np.minimum(np.std(y_synth[indices]), iqr(y_synth[indices]) / 1.34)
+    
+    # Secondary safety: if standard deviation is 0, give a tiny minimum bandwidth
+    if bw == 0:
+        bw = 1e-5
+
+    # 4. Apply smoothing (Vectorized for speed)
+    noise = np.random.normal(loc=0, scale=bw, size=valid_count)
+    y_synth[indices] = y_synth[indices] + noise
+    
     if not top_coded:
         y_real_max += bw
+        
     y_synth[indices] = np.clip(y_synth[indices], y_real_min, y_real_max)
+    
     if dtype == 'int':
-        y_synth[indices] = y_synth[indices].astype(int)
+        y_synth = np.round(y_synth).astype(int)
 
     return y_synth
 
