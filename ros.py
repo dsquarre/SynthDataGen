@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import chi2
 
+ROS_RANDOM_SEED = 2026
+
 import numpy as np
 import pandas as pd
 from scipy.stats import chi2
@@ -109,10 +111,10 @@ def apply_ros(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
     balanced_dfs = []
     for class_name, group in df.groupby(target_col):
         # Sample with replacement to bring this category up to max_size
-        oversampled_group = group.sample(n=max_size, replace=True, random_state=42)
+        oversampled_group = group.sample(n=max_size, replace=True, random_state=ROS_RANDOM_SEED)
         balanced_dfs.append(oversampled_group)
         
-    balanced_df = pd.concat(balanced_dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    balanced_df = pd.concat(balanced_dfs).sample(frac=1, random_state=ROS_RANDOM_SEED).reset_index(drop=True)
     return balanced_df
 
 import pandas as pd
@@ -139,10 +141,10 @@ def apply_multi_col_ros(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         max_size = df_ros[target_col].value_counts().max()
         balanced_dfs = []
         for class_name, group in df_ros.groupby(target_col):
-            oversampled_group = group.sample(n=max_size, replace=True, random_state=42)
+            oversampled_group = group.sample(n=max_size, replace=True, random_state=ROS_RANDOM_SEED)
             balanced_dfs.append(oversampled_group)
             
-        return pd.concat(balanced_dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+        return pd.concat(balanced_dfs).sample(frac=1, random_state=ROS_RANDOM_SEED).reset_index(drop=True)
         
     # 3. If MULTIPLE categorical columns, create a "Composite Class"
     # Example: 'Square' + '_' + 'Crushing' -> 'Square_Crushing'
@@ -160,11 +162,11 @@ def apply_multi_col_ros(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
     
     # Balance based on the composite combinations
     for class_name, group in df_ros.groupby(temp_target):
-        oversampled_group = group.sample(n=max_size, replace=True, random_state=42)
+        oversampled_group = group.sample(n=max_size, replace=True, random_state=ROS_RANDOM_SEED)
         balanced_dfs.append(oversampled_group)
         
     # Combine, shuffle, and drop the temporary composite column
-    balanced_df = pd.concat(balanced_dfs).sample(frac=1, random_state=42).reset_index(drop=True)
+    balanced_df = pd.concat(balanced_dfs).sample(frac=1, random_state=ROS_RANDOM_SEED).reset_index(drop=True)
     balanced_df = balanced_df.drop(columns=[temp_target])
     
     print(f"\nNew dataset size after Multi-Column ROS: {len(balanced_df)} rows (Balanced across all combinations)")

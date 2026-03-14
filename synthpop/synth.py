@@ -3,15 +3,25 @@ import numpy as np
 from .data import DataProcessor
 from .cart import CARTMethod
 
-def run_cart(df, cart_samples,impute,metadata):
-	processor = DataProcessor(metadata)
-	processed_data = processor.preprocess(df)
-	cart = CARTMethod(metadata,smoothing=True, minibucket=5, random_state=59)
-	cart.fit(processed_data)
-	synthetic_processed = cart.sample(cart_samples)
-	cart_df = processor.postprocess(synthetic_processed)
-	cart_df.to_excel(f'datasets/{impute}cart_data.xlsx', index=False)
-	return 'cart',cart_df
+
+CART_RANDOM_SEED = 2026
+
+
+def run_cart(df, cart_samples, impute, metadata, persist=True):
+    processor = DataProcessor(metadata)
+    processed_data = processor.preprocess(df)
+    
+    cart = CARTMethod(metadata, smoothing=True, minibucket=5, random_state=CART_RANDOM_SEED)
+    cart.fit(processed_data)
+    
+    synthetic_processed = cart.sample(cart_samples)
+    cart_df = processor.postprocess(synthetic_processed)
+
+    if persist:
+        df.to_excel(f'datasets/{impute}real_data.xlsx', index=True)
+        cart_df.to_excel(f'datasets/{impute}cart_data.xlsx', index=False)
+    
+    return 'cart', cart_df
 '''
 def synth_gc(df,gc_samples,impute,metadata):
 	processor = DataProcessor(metadata)

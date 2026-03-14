@@ -3,13 +3,74 @@ import pandas as pd
 import numpy as np
 import os
 from synthpop.synth import run_cart
-from sdv_all import run_copula_gan,run_ctgan, run_gaussian_copula, run_tvae
+#from sdv_all import run_copula_gan,run_ctgan, run_gaussian_copula, run_tvae
 from ctab_gan_plus import ctabganplus
-from metrics import evaluate_all
-from ros import apply_ros,add_constraints,drop_covariance_violators,drop_constraint_violators
+from metrics import (
+    evaluate_all,
+    run_repeated_augmented_cv,
+    run_repeated_augmented_regression_cv,
+    save_metric_comparison_plots,
+    save_regression_metric_plots,
+    generate_valid_samples_adaptive
+)
+from ros import apply_ros,add_constraints
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import KNNImputer, IterativeImputer, MissingIndicator
 from sklearn.ensemble import RandomForestClassifier
+
+GLOBAL_RANDOM_SEED = 2026
+
+
+DEFAULT_REJECTION_THRESHOLDS = {
+    'Marginal': 0.70,
+    'boundary_score': 0.99,
+    'corr_score': 0.65,
+    'cov_score': 0.40,
+    'violation_rate': 0.001,
+    'propensity_score': 0.15
+}
+
+DEFAULT_GENERATION_SETTINGS = {
+    'min_batch_size': 500,
+    'max_batch_size': 24000,
+    'max_total_generated_multiplier': 120,
+    'max_failed_attempts': 60,
+    'acceptance_rate_floor': 0.01,
+    'model_retry_attempts': 3,
+    'fold_synthetic_ratio': 1.0,
+    'use_full_fold_synthetic_target': False
+}
+
+
+def parse_metric_thresholds(input_text: str, defaults: dict):
+    if not input_text.strip():
+        return defaults.copy()
+
+    parsed = {}
+    for chunk in input_text.split(','):
+        entry = chunk.strip()
+        if not entry:
+            continue
+
+        if '=' not in entry:
+            print(f"Skipping malformed threshold entry: {entry}")
+            continue
+
+        metric_name, raw_value = entry.split('=', 1)
+        metric_name = metric_name.strip()
+        raw_value = raw_value.strip()
+
+        try:
+            parsed[metric_name] = float(raw_value)
+        except ValueError:
+            print(f"Skipping non-numeric threshold: {entry}")
+
+    if not parsed:
+        return defaults.copy()
+
+    merged = defaults.copy()
+    merged.update(parsed)
+    return merged
 
 def impute_categorical_rf(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
     df_imputed = df.copy()
@@ -35,7 +96,7 @@ def impute_categorical_rf(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         X_train = X_train.fillna(fill_values)
         X_missing = X_missing.fillna(fill_values)
 
-        model = RandomForestClassifier(n_estimators=100, random_state=47)
+        model = RandomForestClassifier(n_estimators=100, random_state=GLOBAL_RANDOM_SEED)
         model.fit(X_train, y_train)
         
         predicted_categories = model.predict(X_missing)
@@ -58,7 +119,7 @@ def decode_categorical(df, encoders):
     for col, categories in encoders.items():
         if col in df_decoded.columns:
             series = df_decoded[col].round().fillna(-1)
-            vals = series.values
+            vals = series.values.copy()
             valid_mask = vals >= 0
             vals[valid_mask] = np.clip(vals[valid_mask], 0, len(categories) - 1)
             df_decoded[col] = pd.Categorical.from_codes(vals.astype(int), categories=categories)
@@ -94,33 +155,45 @@ def missing_indicator_imputation(df: pd.DataFrame) -> pd.DataFrame:
 def iterative_imputation(df: pd.DataFrame,metadata) -> pd.DataFrame:
     """Impute missing using IterativeImputer."""
     df_encoded, encoders = encode_categorical(df, metadata)
-    imputer = IterativeImputer(random_state=67)
+    imputer = IterativeImputer(random_state=GLOBAL_RANDOM_SEED)
     data_imputed = imputer.fit_transform(df_encoded)
     df_imputed = pd.DataFrame(data_imputed, columns=df.columns, index=df.index)
     return decode_categorical(df_imputed, encoders)
 
-def generate_valid_samples(model_func, imp_df, target_size, prefix, metadata, constraints,target_column):
-    """
-    Continually generates synthetic data in doubling batch sizes until 
-    the requested target_size is met after all physical constraints are applied.
-    """
-    valid_data = pd.DataFrame()
-    iteration = 0
-    model_name = ""
-    
-    while len(valid_data) < target_size:
-        n_samples = (2 ** iteration) * target_size
-        #print(f"Generating batch size of {n_samples}.. Current valid : {len(valid_data)}")
-        model_name, temp_df = model_func(imp_df, n_samples, prefix)    
-        if target_column:
-            temp_df = apply_ros(temp_df, target_column)
-        temp_df = drop_constraint_violators(temp_df, constraints)
-        #temp_df = drop_covariance_violators(imp_df, temp_df, metadata)
-        
-        valid_data = pd.concat([valid_data, temp_df], ignore_index=True)
-        iteration += 1
-        
-    return model_name, valid_data
+def generate_valid_samples(
+    model_func,
+    imp_df,
+    real_reference_df,
+    target_size,
+    prefix,
+    metadata,
+    constraints,
+    target_column,
+    rejection_thresholds=None,
+    max_iterations=8,
+    generation_settings=None
+):
+    settings = DEFAULT_GENERATION_SETTINGS.copy()
+    if generation_settings:
+        settings.update(generation_settings)
+
+    return generate_valid_samples_adaptive(
+        model_func=model_func,
+        imp_df=imp_df,
+        real_reference_df=real_reference_df,
+        target_size=target_size,
+        prefix=prefix,
+        metadata=metadata,
+        constraints=constraints,
+        ros_target_column=target_column,
+        rejection_thresholds=rejection_thresholds,
+        min_batch_size=settings['min_batch_size'],
+        max_batch_size=settings['max_batch_size'],
+        max_total_generated_multiplier=settings['max_total_generated_multiplier'],
+        max_failed_attempts=max(settings['max_failed_attempts'], max_iterations),
+        acceptance_rate_floor=settings['acceptance_rate_floor'],
+        verbose=True
+    )
 
 
 def main():
@@ -176,11 +249,14 @@ def main():
 
     print("You can edit column types now. Use index and 'n' or 'c' (e.g. '3 n'). Type 'done' when finished.")
     metadata = interactive_edit_metadata(metadata)
-    n = int(input("Which one is the most important column for physical constraints? (type column index, or '-1')> "))
-    target_column = df.columns[n] if n!=-1 else None
+    ros_index = int(input("Enter ROS target column index (or '-1' to skip ROS/classification evaluation): "))
+    target_column = df.columns[ros_index] if ros_index != -1 else None
+    regression_index = int(input("Enter regression output column index for regression models (or '-1' to skip regression): "))
+    regression_target_column = df.columns[regression_index] if regression_index != -1 else None
     print("Saving SDV-compatible metadata to sdv_metadata.json")
     save_as_sdv_json(metadata, path='sdv_metadata.json')
-    
+
+    raw_df_for_cv = df.copy()
     df = impute_categorical_rf(df, metadata)
     #print(df.head())
     imputations = {
@@ -191,66 +267,207 @@ def main():
     
     constraints = add_constraints(df)
 
+    print("\nDefault rejection thresholds:")
+    for metric_name, threshold in DEFAULT_REJECTION_THRESHOLDS.items():
+        print(f"  {metric_name} = {threshold}")
+
+    threshold_input = input(
+        "Enter custom thresholds as metric=value pairs (comma-separated), or press Enter for defaults: "
+    ).strip()
+    rejection_thresholds = parse_metric_thresholds(threshold_input, DEFAULT_REJECTION_THRESHOLDS)
+    regression_rejection_thresholds = {
+        metric: threshold
+        for metric, threshold in rejection_thresholds.items()
+        if metric != 'propensity_score'
+    }
+    print(f"Using rejection thresholds: {rejection_thresholds}")
+    print(f"Using regression thresholds (privacy removed): {regression_rejection_thresholds}")
+
+    repeats_input = input("Repeated 5-fold CV repeats (default: 3): ").strip()
+    try:
+        cv_repeats = int(repeats_input) if repeats_input else 3
+    except ValueError:
+        cv_repeats = 3
+
+    fold_target_mode_input = input(
+        "Fold synthetic size mode for CV ('1' = 1:1 with train fold, '2' = full Dn per fold, default: 1): "
+    ).strip().lower()
+    use_full_fold_synthetic_target = fold_target_mode_input in {'2', 'full', 'dn', 'all'}
+    fold_mode_label = 'full Dn per fold' if use_full_fold_synthetic_target else '1:1 with train fold'
+    print(f"Using fold synthetic sizing mode: {fold_mode_label}")
+
     all_results = []
-    for impute_name, imp_df in imputations.items():
+    cv_summary_frames = []
+    cv_fold_frames = []
+    regression_summary_frames = []
+    regression_fold_frames = []
+    for impute_name, imputed_df in imputations.items():
         #print(imp_df.head())
         outputs = {}
-        if target_column:    
-            imp_df = apply_ros(imp_df, target_column)
+        generation_settings = DEFAULT_GENERATION_SETTINGS.copy()
+        generation_settings['use_full_fold_synthetic_target'] = use_full_fold_synthetic_target
+        imp_df_real = imputed_df.copy()
+        imp_df_for_generation = apply_ros(imp_df_real, target_column) if target_column else imp_df_real.copy()
             
         # Update metadata for this imputation (e.g. if MI added columns)
         current_metadata = metadata.copy()
-        for col in imp_df.columns:
+        for col in imp_df_for_generation.columns:
             if col not in current_metadata:
                 current_metadata[col] = 'categorical'
         
         save_as_sdv_json(current_metadata, path='sdv_metadata.json')
         #print(imp_df.head())
         models = {
-            'CART': lambda d, n, pfx: run_cart(d, n, pfx, current_metadata),
-            'Gaussian Copula': run_gaussian_copula,
-            'CTGAN': run_ctgan,
-            'CopulaGAN': run_copula_gan,
-            'TVAE': run_tvae
+            'CART': lambda d, n, pfx, persist=True: run_cart(d, n, pfx, current_metadata, persist=persist),
+            #'Gaussian Copula': run_gaussian_copula,
+            #'CTGAN': run_ctgan,
+            #'CopulaGAN': run_copula_gan,
+            #'TVAE': run_tvae
         }
         
         for model_display_name, model_func in models.items():
             print(f"[{impute_name}] Running {model_display_name}...")
-            
-            try:
-                name, valid_df = generate_valid_samples(
-                    model_func=model_func,
-                    imp_df=imp_df,
-                    target_size=Dn,
-                    prefix=impute_name,
-                    metadata=current_metadata,
-                    constraints=constraints,
-                    target_column=target_column
-                )
-                outputs[f"{name}_{impute_name}"] = valid_df
-            except Exception as e:
-                print(f"Skipping {model_display_name} due to error: {e}")
+
+            max_model_attempts = max(1, int(generation_settings.get('model_retry_attempts', 1)))
+            model_generated = False
+
+            for attempt_idx in range(1, max_model_attempts + 1):
+                try:
+                    generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx, persist=False)
+                    name, valid_df = generate_valid_samples(
+                        model_func=generation_func,
+                        imp_df=imp_df_for_generation,
+                        real_reference_df=imp_df_real,
+                        target_size=Dn,
+                        prefix=f"{impute_name}_attempt{attempt_idx}",
+                        metadata=current_metadata,
+                        constraints=constraints,
+                        target_column=target_column,
+                        rejection_thresholds=rejection_thresholds,
+                        generation_settings=generation_settings
+                    )
+                    outputs[f"{name}_{impute_name}"] = valid_df
+                    model_generated = True
+                    if attempt_idx > 1:
+                        print(f"[{impute_name}] {model_display_name} succeeded on retry {attempt_idx}/{max_model_attempts}.")
+                    break
+                except Exception as e:
+                    if attempt_idx < max_model_attempts:
+                        print(
+                            f"[{impute_name}] {model_display_name} attempt {attempt_idx}/{max_model_attempts} failed: {e}. "
+                            "Retrying..."
+                        )
+                    else:
+                        print(f"Skipping {model_display_name} due to error after {max_model_attempts} attempts: {e}")
+
+            if not model_generated:
+                continue
 
         if impute_name == 'mi':
-            indicator_cols = [col for col in imp_df.columns if col not in metadata]
+            indicator_cols = [col for col in imp_df_for_generation.columns if col not in metadata]
             if indicator_cols:
                 print(f"Removing missing indicator columns: {indicator_cols}")
-                imp_df = imp_df.drop(columns=indicator_cols)
+                imp_df_real = imp_df_real.drop(columns=indicator_cols)
+                imp_df_for_generation = imp_df_for_generation.drop(columns=indicator_cols)
                 for key in outputs:
                     outputs[key] = outputs[key].drop(columns=indicator_cols, errors='ignore')
                 for col in indicator_cols:
                     if col in current_metadata:
                         del current_metadata[col]
 
+        for key, synth_df in outputs.items():
+            generator_name = key.split('_')[0] if '_' in key else key
+            imp_df_for_generation.to_excel(f'datasets/{impute_name}real_data.xlsx', index=True)
+            synth_df.to_excel(f'datasets/{impute_name}{generator_name}_data.xlsx', index=False)
+
         print(f"Generating comparative metrics report for {impute_name} imputations...")
         # Evaluate this batch
-        batch_results = evaluate_all(impute_name, imp_df, outputs, current_metadata, constraints)
+        batch_results = evaluate_all(impute_name, imp_df_real, outputs, current_metadata, constraints)
         all_results.extend(batch_results)
+
+        if regression_target_column and regression_target_column in raw_df_for_cv.columns:
+            for model_display_name, model_func in models.items():
+                regression_generation_func = lambda d, n, pfx: run_cart(d, n, pfx, metadata, persist=False)
+                reg_summary, reg_folds = run_repeated_augmented_regression_cv(
+                    real_df=raw_df_for_cv,
+                    target_column=regression_target_column,
+                    imputation_name=impute_name,
+                    synthetic_model_name=f"{model_display_name.lower()}_{impute_name}",
+                    model_func=regression_generation_func,
+                    metadata=metadata,
+                    constraints=constraints,
+                    synthetic_target_size=Dn,
+                    rejection_thresholds=regression_rejection_thresholds,
+                    n_splits=5,
+                    n_repeats=cv_repeats,
+                    random_state=GLOBAL_RANDOM_SEED,
+                    min_batch_size=generation_settings['min_batch_size'],
+                    max_batch_size=generation_settings['max_batch_size'],
+                    max_total_generated_multiplier=generation_settings['max_total_generated_multiplier'],
+                    max_failed_attempts=generation_settings['max_failed_attempts'],
+                    acceptance_rate_floor=generation_settings['acceptance_rate_floor'],
+                    synthetic_train_ratio=generation_settings['fold_synthetic_ratio'],
+                    use_full_synthetic_target=generation_settings['use_full_fold_synthetic_target']
+                )
+                if not reg_summary.empty:
+                    reg_summary['Target_Column'] = regression_target_column
+                    regression_summary_frames.append(reg_summary)
+                if not reg_folds.empty:
+                    reg_folds['Target_Column'] = regression_target_column
+                    regression_fold_frames.append(reg_folds)
+
+        if target_column:
+            for model_display_name, model_func in models.items():
+                cv_generation_func = lambda d, n, pfx: run_cart(d, n, pfx, metadata, persist=False)
+                cv_summary, cv_folds = run_repeated_augmented_cv(
+                    real_df=raw_df_for_cv,
+                    target_column=target_column,
+                    imputation_name=impute_name,
+                    synthetic_model_name=f"{model_display_name.lower()}_{impute_name}",
+                    model_func=cv_generation_func,
+                    metadata=metadata,
+                    constraints=constraints,
+                    synthetic_target_size=Dn,
+                    rejection_thresholds=rejection_thresholds,
+                    n_splits=5,
+                    n_repeats=cv_repeats,
+                    random_state=GLOBAL_RANDOM_SEED,
+                    min_batch_size=generation_settings['min_batch_size'],
+                    max_batch_size=generation_settings['max_batch_size'],
+                    max_total_generated_multiplier=generation_settings['max_total_generated_multiplier'],
+                    max_failed_attempts=generation_settings['max_failed_attempts'],
+                    acceptance_rate_floor=generation_settings['acceptance_rate_floor'],
+                    synthetic_train_ratio=generation_settings['fold_synthetic_ratio'],
+                    use_full_synthetic_target=generation_settings['use_full_fold_synthetic_target']
+                )
+                if not cv_summary.empty:
+                    cv_summary_frames.append(cv_summary)
+                if not cv_folds.empty:
+                    cv_fold_frames.append(cv_folds)
 
     #print("Skipping CTAB-GAN+ model for now...")
     
     if all_results:
-        pd.DataFrame(all_results).round(3).to_excel('evaluation_report.xlsx', index=False)
+        metrics_df = pd.DataFrame(all_results).round(3)
+        metrics_df.to_excel('evaluation_report.xlsx', index=False)
+        save_metric_comparison_plots(metrics_df, output_dir='plots', model_name='cart')
+
+    if cv_summary_frames:
+        cv_summary_df = pd.concat(cv_summary_frames, ignore_index=True).round(4)
+        cv_folds_df = pd.concat(cv_fold_frames, ignore_index=True).round(4) if cv_fold_frames else pd.DataFrame()
+        with pd.ExcelWriter('augmented_cv_report.xlsx') as writer:
+            cv_summary_df.to_excel(writer, sheet_name='summary', index=False)
+            if not cv_folds_df.empty:
+                cv_folds_df.to_excel(writer, sheet_name='fold_scores', index=False)
+
+    if regression_summary_frames:
+        regression_summary_df = pd.concat(regression_summary_frames, ignore_index=True).round(4)
+        regression_folds_df = pd.concat(regression_fold_frames, ignore_index=True).round(4) if regression_fold_frames else pd.DataFrame()
+        with pd.ExcelWriter('regression_report.xlsx') as writer:
+            regression_summary_df.to_excel(writer, sheet_name='summary', index=False)
+            if not regression_folds_df.empty:
+                regression_folds_df.to_excel(writer, sheet_name='fold_scores', index=False)
+        save_regression_metric_plots(regression_summary_df, output_dir='plots')
 
     print("\nAll done. Outputs and reports written to current directory.")
 
