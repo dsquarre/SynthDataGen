@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import ast
 import re
 from scipy.stats import ks_2samp, wasserstein_distance
 from scipy.linalg import sqrtm
@@ -210,6 +211,85 @@ def _build_fold_constraints(train_df: pd.DataFrame, base_constraints: list):
 
     fold_constraints.extend(custom_constraints)
     return fold_constraints
+
+
+def _normalize_formula_expression(expression: str) -> str:
+    return re.sub(r'(?<![\w.])(\d+)(?![\w.])', r'c\1', expression)
+
+
+def _evaluate_formula_expression(expression: str, reference_df: pd.DataFrame) -> pd.Series:
+    if reference_df.empty:
+        raise ValueError('Reference dataframe is empty.')
+
+    normalized_expr = _normalize_formula_expression(expression.strip())
+    parsed = ast.parse(normalized_expr, mode='eval')
+    column_refs = {f'c{i}': reference_df.iloc[:, i] for i in range(reference_df.shape[1])}
+
+    def _eval_ast(ast_node):
+        if isinstance(ast_node, ast.Expression):
+            return _eval_ast(ast_node.body)
+
+        if isinstance(ast_node, ast.BinOp):
+            left_val = _eval_ast(ast_node.left)
+            right_val = _eval_ast(ast_node.right)
+
+            if isinstance(ast_node.op, ast.Add):
+                return left_val + right_val
+            if isinstance(ast_node.op, ast.Sub):
+                return left_val - right_val
+            if isinstance(ast_node.op, ast.Mult):
+                return left_val * right_val
+            if isinstance(ast_node.op, ast.Div):
+                return left_val / right_val
+            if isinstance(ast_node.op, ast.Pow):
+                return left_val ** right_val
+            if isinstance(ast_node.op, ast.Mod):
+                return left_val % right_val
+
+            raise ValueError('Unsupported operator in formula.')
+
+        if isinstance(ast_node, ast.UnaryOp):
+            operand = _eval_ast(ast_node.operand)
+            if isinstance(ast_node.op, ast.UAdd):
+                return operand
+            if isinstance(ast_node.op, ast.USub):
+                return -operand
+            raise ValueError('Unsupported unary operator in formula.')
+
+        if isinstance(ast_node, ast.Name):
+            if ast_node.id not in column_refs:
+                raise ValueError(f"Unknown column reference '{ast_node.id}'.")
+            return column_refs[ast_node.id]
+
+        if isinstance(ast_node, ast.Constant) and isinstance(ast_node.value, (int, float)):
+            return float(ast_node.value)
+
+        raise ValueError('Unsupported expression syntax.')
+
+    evaluated = _eval_ast(parsed)
+    if np.isscalar(evaluated):
+        return pd.Series([evaluated] * len(reference_df), index=reference_df.index)
+    return pd.Series(evaluated, index=reference_df.index)
+
+
+def _apply_reconstruction_rules(df: pd.DataFrame, reconstruction_rules=None) -> pd.DataFrame:
+    if not reconstruction_rules:
+        return df
+
+    base_reference = df.copy()
+    reconstructed_df = df.copy()
+
+    for rule in reconstruction_rules:
+        target_column = rule.get('target_column')
+        expression = rule.get('expression')
+        if not target_column or not expression:
+            continue
+        try:
+            reconstructed_df[target_column] = _evaluate_formula_expression(expression, base_reference)
+        except Exception as exc:
+            print(f"Warning: could not apply reconstruction formula '{target_column}={expression}': {exc}")
+
+    return reconstructed_df
 
 
 def summarize_metrics(metric_output: dict) -> dict:
@@ -601,6 +681,8 @@ def generate_valid_samples_adaptive(
     total_failed_attempts = 0
     estimated_acceptance_rate = 1.0
     model_name = ''
+    batch_iteration = 0
+    MAX_ITERATIONS = 500  # Hard iteration limit to prevent infinite loops
 
     max_total_generated = max(int(target_size * max_total_generated_multiplier), min_batch_size)
 
@@ -608,6 +690,7 @@ def generate_valid_samples_adaptive(
         len(valid_data) < target_size
         and consecutive_failed_attempts < max_failed_attempts
         and total_generated < max_total_generated
+        and batch_iteration < MAX_ITERATIONS
     ):
         remaining = target_size - len(valid_data)
         effective_rate = max(estimated_acceptance_rate, acceptance_rate_floor)
@@ -620,6 +703,10 @@ def generate_valid_samples_adaptive(
             break
         batch_size = min(batch_size, total_remaining_budget)
         if batch_size <= 0:
+            break
+
+        batch_iteration += 1
+        if batch_iteration > MAX_ITERATIONS:
             break
 
         model_name, temp_df = model_func(imp_df, batch_size, prefix)
@@ -642,6 +729,11 @@ def generate_valid_samples_adaptive(
                     f"Rejected empty synthetic batch ({prefix}); generated={total_generated}, "
                     f"consecutive_failures={consecutive_failed_attempts}, total_failures={total_failed_attempts}"
                 )
+            # Force exit if too many consecutive empty batches (indicates fundamental constraint issue)
+            if consecutive_failed_attempts >= max(5, int(max_failed_attempts * 0.3)):
+                if verbose:
+                    print(f"  [TIMEOUT] Too many consecutive empty batches. Exiting generation for {prefix}.")
+                break
             continue
 
         keep_batch = True
@@ -689,7 +781,7 @@ def generate_valid_samples_adaptive(
         raise RuntimeError(
             f"Could not reach target size {target_size}. Accepted {len(valid_data)} rows after "
             f"generating {total_generated} rows with {total_failed_attempts} total failed attempts "
-            f"({consecutive_failed_attempts} consecutive at stop)."
+            f"({consecutive_failed_attempts} consecutive at stop). Batch iterations: {batch_iteration}/{MAX_ITERATIONS}."
         )
 
     return model_name, valid_data.iloc[:target_size].reset_index(drop=True)
@@ -745,7 +837,8 @@ def run_repeated_augmented_cv(
     max_failed_attempts: int = 8,
     acceptance_rate_floor: float = 0.05,
     synthetic_train_ratio: float = 1.0,
-    use_full_synthetic_target: bool = False
+    use_full_synthetic_target: bool = False,
+    reconstruction_rules=None
 ):
     if target_column not in real_df.columns:
         return pd.DataFrame(), pd.DataFrame()
@@ -765,12 +858,17 @@ def run_repeated_augmented_cv(
         n_repeats=n_repeats,
         random_state=random_state
     )
+    total_folds = n_splits * n_repeats
 
     fold_rows = []
     y_full = real_base[target_column].astype(str)
     split_indices = splitter.split(real_base.drop(columns=[target_column]), y_full)
 
     for fold_idx, (train_idx, test_idx) in enumerate(split_indices, start=1):
+        print(
+            f"[Classification CV] {imputation_name} | {synthetic_model_name} | "
+            f"fold {fold_idx}/{total_folds} started"
+        )
         real_train_raw = real_base.iloc[train_idx].reset_index(drop=True)
         real_test_raw = real_base.iloc[test_idx].reset_index(drop=True)
 
@@ -782,6 +880,8 @@ def run_repeated_augmented_cv(
             target_column=target_column,
             random_state=random_state
         )
+        real_train = _apply_reconstruction_rules(real_train, reconstruction_rules)
+        real_test = _apply_reconstruction_rules(real_test, reconstruction_rules)
         fold_constraints = _build_fold_constraints(real_train, constraints)
         if use_full_synthetic_target:
             fold_target_size = synthetic_target_size
@@ -807,8 +907,14 @@ def run_repeated_augmented_cv(
                 acceptance_rate_floor=acceptance_rate_floor,
                 verbose=False
             )
-        except Exception:
+        except Exception as exc:
+            print(
+                f"[Classification CV] {imputation_name} | {synthetic_model_name} | "
+                f"fold {fold_idx}/{total_folds} skipped during synthetic generation: {exc}"
+            )
             continue
+
+        synthetic_fold = _apply_reconstruction_rules(synthetic_fold, reconstruction_rules)
 
         real_train_ros = apply_ros(real_train, target_column)
         synthetic_ros = apply_ros(synthetic_fold, target_column)
@@ -881,6 +987,11 @@ def run_repeated_augmented_cv(
             row['roc_auc'] = auc_value
             fold_rows.append(row)
 
+        print(
+            f"[Classification CV] {imputation_name} | {synthetic_model_name} | "
+            f"fold {fold_idx}/{total_folds} completed"
+        )
+
     fold_df = pd.DataFrame(fold_rows)
     if fold_df.empty:
         return pd.DataFrame(), pd.DataFrame()
@@ -923,7 +1034,8 @@ def run_repeated_augmented_regression_cv(
     max_failed_attempts: int = 8,
     acceptance_rate_floor: float = 0.05,
     synthetic_train_ratio: float = 1.0,
-    use_full_synthetic_target: bool = False
+    use_full_synthetic_target: bool = False,
+    reconstruction_rules=None
 ):
     if target_column not in real_df.columns:
         return pd.DataFrame(), pd.DataFrame()
@@ -940,10 +1052,15 @@ def run_repeated_augmented_regression_cv(
         n_repeats=n_repeats,
         random_state=random_state
     )
+    total_folds = n_splits * n_repeats
 
     fold_rows = []
 
     for fold_idx, (train_idx, test_idx) in enumerate(splitter.split(real_base), start=1):
+        print(
+            f"[Regression CV] {imputation_name} | {synthetic_model_name} | "
+            f"fold {fold_idx}/{total_folds} started"
+        )
         real_train_raw = real_base.iloc[train_idx].reset_index(drop=True)
         real_test_raw = real_base.iloc[test_idx].reset_index(drop=True)
 
@@ -955,6 +1072,8 @@ def run_repeated_augmented_regression_cv(
             target_column=target_column,
             random_state=random_state
         )
+        real_train = _apply_reconstruction_rules(real_train, reconstruction_rules)
+        real_test = _apply_reconstruction_rules(real_test, reconstruction_rules)
         fold_constraints = _build_fold_constraints(real_train, constraints)
         if use_full_synthetic_target:
             fold_target_size = synthetic_target_size
@@ -980,8 +1099,14 @@ def run_repeated_augmented_regression_cv(
                 acceptance_rate_floor=acceptance_rate_floor,
                 verbose=False
             )
-        except Exception:
+        except Exception as exc:
+            print(
+                f"[Regression CV] {imputation_name} | {synthetic_model_name} | "
+                f"fold {fold_idx}/{total_folds} skipped during synthetic generation: {exc}"
+            )
             continue
+
+        synthetic_fold = _apply_reconstruction_rules(synthetic_fold, reconstruction_rules)
 
         if target_column not in synthetic_fold.columns:
             continue
@@ -1069,6 +1194,11 @@ def run_repeated_augmented_regression_cv(
                     'mape': mape
                 })
 
+        print(
+            f"[Regression CV] {imputation_name} | {synthetic_model_name} | "
+            f"fold {fold_idx}/{total_folds} completed"
+        )
+
     fold_df = pd.DataFrame(fold_rows)
     if fold_df.empty:
         return pd.DataFrame(), pd.DataFrame()
@@ -1122,8 +1252,11 @@ def save_metric_comparison_plots(results_df: pd.DataFrame, output_dir: str = 'pl
         if agg_df.shape[0] < 2:
             continue
 
+        color_map = plt.get_cmap('tab20')
+        technique_colors = [color_map(i % color_map.N) for i in range(len(agg_df))]
+
         plt.figure(figsize=(9, 5))
-        plt.bar(agg_df['Imputation'], agg_df[metric_name], color='#1f77b4')
+        plt.bar(agg_df['Imputation'], agg_df[metric_name], color=technique_colors)
         plt.title(f'{model_name.upper()} comparison by imputation: {metric_name}')
         plt.xlabel('Imputation Technique')
         plt.ylabel(metric_name)
@@ -1288,7 +1421,9 @@ def save_regression_metric_plots(regression_summary_df: pd.DataFrame, output_dir
 
     has_evaluation = 'Evaluation' in regression_summary_df.columns
     has_imputation = 'Imputation' in regression_summary_df.columns
+    has_synthetic_model = 'Synthetic_Model' in regression_summary_df.columns
     regressors = sorted(regression_summary_df['Regressor'].dropna().unique())
+    synthetic_models = sorted(regression_summary_df['Synthetic_Model'].dropna().unique()) if has_synthetic_model else [None]
 
     # Canonical order: real-only first so it appears left in every group
     eval_order = ['Real_Only_TestReal', 'FoldLocal_TrainAugmented_TestReal']
@@ -1303,60 +1438,80 @@ def save_regression_metric_plots(regression_summary_df: pd.DataFrame, output_dir
 
     saved_files = []
 
-    for metric_name in metric_columns:
-        n_regressors = len(regressors)
-        fig, axes = plt.subplots(1, n_regressors, figsize=(7 * n_regressors, 6), sharey=False)
-        if n_regressors == 1:
-            axes = [axes]
+    # Create separate plots for each synthetic model
+    for synth_model in synthetic_models:
+        if synth_model is not None:
+            filtered_df = regression_summary_df[regression_summary_df['Synthetic_Model'] == synth_model].copy()
+            plot_title_suffix = f' ({synth_model})'
+            plot_file_prefix = f'{synth_model.lower()}_'
+        else:
+            filtered_df = regression_summary_df.copy()
+            plot_title_suffix = ''
+            plot_file_prefix = ''
 
-        for ax, regressor in zip(axes, regressors):
-            reg_df = regression_summary_df[
-                regression_summary_df['Regressor'] == regressor
-            ].copy()
+        if filtered_df.empty:
+            continue
 
-            if has_evaluation and has_imputation:
-                imputations = sorted(reg_df['Imputation'].dropna().unique())
-                present_evals = [e for e in eval_order if e in reg_df['Evaluation'].values]
-                if not present_evals:
-                    present_evals = sorted(reg_df['Evaluation'].dropna().unique())
+        for metric_name in metric_columns:
+            n_regressors = len(regressors)
+            fig, axes = plt.subplots(1, n_regressors, figsize=(7 * n_regressors, 6), sharey=False)
+            if n_regressors == 1:
+                axes = [axes]
 
-                x = np.arange(len(imputations))
-                n_evals = len(present_evals)
-                bar_width = 0.7 / n_evals
+            for ax, regressor in zip(axes, regressors):
+                reg_df = filtered_df[
+                    filtered_df['Regressor'] == regressor
+                ].copy()
 
-                for i, eval_name in enumerate(present_evals):
-                    eval_df = reg_df[reg_df['Evaluation'] == eval_name]
-                    values = [
-                        eval_df.loc[eval_df['Imputation'] == imp, metric_name].mean()
-                        if imp in eval_df['Imputation'].values else 0.0
-                        for imp in imputations
-                    ]
-                    offset = (i - n_evals / 2 + 0.5) * bar_width
-                    ax.bar(
-                        x + offset, values, bar_width,
-                        label=eval_labels.get(eval_name, eval_name),
-                        color=eval_colors.get(eval_name, '#7f7f7f')
-                    )
+                if reg_df.empty:
+                    ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+                    ax.set_title(regressor, fontsize=12, fontweight='bold')
+                    continue
 
-                ax.set_xticks(x)
-                ax.set_xticklabels(imputations, fontsize=10)
-            else:
-                agg = reg_df[['Dataset', metric_name]].dropna()
-                ax.bar(agg['Dataset'], agg[metric_name], color='#1f77b4')
-                ax.set_xticklabels(agg['Dataset'], rotation=30, ha='right', fontsize=9)
+                if has_evaluation and has_imputation:
+                    imputations = sorted(reg_df['Imputation'].dropna().unique())
+                    present_evals = [e for e in eval_order if e in reg_df['Evaluation'].values]
+                    if not present_evals:
+                        present_evals = sorted(reg_df['Evaluation'].dropna().unique())
 
-            ax.set_title(regressor, fontsize=12, fontweight='bold')
-            ax.set_xlabel('Imputation')
-            ax.set_ylabel(metric_name)
-            ax.legend(fontsize=9)
-            ax.grid(axis='y', linestyle='--', alpha=0.4)
+                    x = np.arange(len(imputations))
+                    n_evals = len(present_evals)
+                    bar_width = 0.7 / n_evals
 
-        fig.suptitle(f'Regression Comparison: {metric_name}', fontsize=13, fontweight='bold')
-        plt.tight_layout()
-        output_path = os.path.join(output_dir, f'regression_compare_{metric_name}.png')
-        plt.savefig(output_path, dpi=300)
-        plt.close()
-        saved_files.append(output_path)
+                    for i, eval_name in enumerate(present_evals):
+                        eval_df = reg_df[reg_df['Evaluation'] == eval_name]
+                        values = [
+                            eval_df.loc[eval_df['Imputation'] == imp, metric_name].mean()
+                            if imp in eval_df['Imputation'].values else 0.0
+                            for imp in imputations
+                        ]
+                        offset = (i - n_evals / 2 + 0.5) * bar_width
+                        ax.bar(
+                            x + offset, values, bar_width,
+                            label=eval_labels.get(eval_name, eval_name),
+                            color=eval_colors.get(eval_name, '#7f7f7f')
+                        )
+
+                    ax.set_xticks(x)
+                    ax.set_xticklabels(imputations, fontsize=10)
+                else:
+                    agg = reg_df[['Dataset', metric_name]].dropna()
+                    if not agg.empty:
+                        ax.bar(agg['Dataset'], agg[metric_name], color='#1f77b4')
+                        ax.set_xticklabels(agg['Dataset'], rotation=30, ha='right', fontsize=9)
+
+                ax.set_title(regressor, fontsize=12, fontweight='bold')
+                ax.set_xlabel('Imputation')
+                ax.set_ylabel(metric_name)
+                ax.legend(fontsize=9)
+                ax.grid(axis='y', linestyle='--', alpha=0.4)
+
+            fig.suptitle(f'Regression Comparison: {metric_name}{plot_title_suffix}', fontsize=13, fontweight='bold')
+            plt.tight_layout()
+            output_path = os.path.join(output_dir, f'regression_compare_{plot_file_prefix}{metric_name}.png')
+            plt.savefig(output_path, dpi=300)
+            plt.close()
+            saved_files.append(output_path)
 
     return saved_files
 

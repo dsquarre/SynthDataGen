@@ -2,8 +2,10 @@ from metadata_manager import generate_metadata, interactive_edit_metadata, save_
 import pandas as pd
 import numpy as np
 import os
+import ast
+import re
 from synthpop.synth import run_cart
-#from sdv_all import run_copula_gan,run_ctgan, run_gaussian_copula, run_tvae
+from sdv_all import run_copula_gan,run_ctgan, run_gaussian_copula, run_tvae
 from ctab_gan_plus import ctabganplus
 from metrics import (
     evaluate_all,
@@ -16,7 +18,7 @@ from metrics import (
 from ros import apply_ros,add_constraints
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import KNNImputer, IterativeImputer, MissingIndicator
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 GLOBAL_RANDOM_SEED = 2026
 
@@ -34,7 +36,7 @@ DEFAULT_GENERATION_SETTINGS = {
     'min_batch_size': 500,
     'max_batch_size': 24000,
     'max_total_generated_multiplier': 120,
-    'max_failed_attempts': 60,
+    'max_failed_attempts': 60,  
     'acceptance_rate_floor': 0.01,
     'model_retry_attempts': 3,
     'fold_synthetic_ratio': 1.0,
@@ -71,6 +73,155 @@ def parse_metric_thresholds(input_text: str, defaults: dict):
     merged = defaults.copy()
     merged.update(parsed)
     return merged
+
+
+def build_aligned_metadata_for_df(df: pd.DataFrame, base_metadata: dict) -> dict:
+    aligned = {}
+    for col in df.columns:
+        if col in base_metadata:
+            aligned[col] = base_metadata[col]
+        else:
+            if pd.api.types.is_numeric_dtype(df[col]) and not pd.api.types.is_bool_dtype(df[col]):
+                aligned[col] = 'numerical'
+            else:
+                aligned[col] = 'categorical'
+    return aligned
+
+
+def run_sdv_model_with_aligned_metadata(model_func, df: pd.DataFrame, num_rows: int, output_prefix: str, base_metadata: dict):
+    aligned_metadata = build_aligned_metadata_for_df(df, base_metadata)
+    save_as_sdv_json(aligned_metadata, path='sdv_metadata.json')
+    return model_func(df, num_rows, output_prefix)
+
+
+def _normalize_formula_expression(expression: str) -> str:
+    return re.sub(r'(?<![\w.])(\d+)(?![\w.])', r'c\1', expression)
+
+
+def _evaluate_formula_expression(expression: str, reference_df: pd.DataFrame) -> pd.Series:
+    if reference_df.empty:
+        raise ValueError("Reference dataframe is empty.")
+
+    normalized_expr = _normalize_formula_expression(expression.strip())
+    node = ast.parse(normalized_expr, mode='eval')
+    column_refs = {f'c{i}': reference_df.iloc[:, i] for i in range(reference_df.shape[1])}
+
+    def _eval_ast(ast_node):
+        if isinstance(ast_node, ast.Expression):
+            return _eval_ast(ast_node.body)
+
+        if isinstance(ast_node, ast.BinOp):
+            left_val = _eval_ast(ast_node.left)
+            right_val = _eval_ast(ast_node.right)
+
+            if isinstance(ast_node.op, ast.Add):
+                return left_val + right_val
+            if isinstance(ast_node.op, ast.Sub):
+                return left_val - right_val
+            if isinstance(ast_node.op, ast.Mult):
+                return left_val * right_val
+            if isinstance(ast_node.op, ast.Div):
+                return left_val / right_val
+            if isinstance(ast_node.op, ast.Pow):
+                return left_val ** right_val
+            if isinstance(ast_node.op, ast.Mod):
+                return left_val % right_val
+
+            raise ValueError("Unsupported operator in formula.")
+
+        if isinstance(ast_node, ast.UnaryOp):
+            operand = _eval_ast(ast_node.operand)
+            if isinstance(ast_node.op, ast.UAdd):
+                return operand
+            if isinstance(ast_node.op, ast.USub):
+                return -operand
+            raise ValueError("Unsupported unary operator in formula.")
+
+        if isinstance(ast_node, ast.Name):
+            if ast_node.id not in column_refs:
+                raise ValueError(f"Unknown column reference '{ast_node.id}'.")
+            return column_refs[ast_node.id]
+
+        if isinstance(ast_node, ast.Constant) and isinstance(ast_node.value, (int, float)):
+            return float(ast_node.value)
+
+        raise ValueError("Unsupported expression syntax.")
+
+    evaluated = _eval_ast(node)
+    if np.isscalar(evaluated):
+        return pd.Series([evaluated] * len(reference_df), index=reference_df.index)
+    return pd.Series(evaluated, index=reference_df.index)
+
+
+def collect_reconstruction_formulas(reference_df: pd.DataFrame):
+    print("\nOptional: define reconstruction formulas to add derived columns in exported files.")
+    print("Enter a formula expression, then provide the new column name.")
+    print("You can also use shorthand '<new_column>=<formula>'.")
+    print("Examples: 12/13, c12/(c13+0.001), ratio=12/13")
+    print("Note: integer tokens are treated as column indices. Type 'done' when finished.")
+
+    rules = []
+    auto_idx = 1
+
+    while True:
+        user_input = input("Formula expression (or 'done'): ").strip()
+        if not user_input:
+            continue
+        if user_input.lower() == 'done':
+            break
+
+        if '=' in user_input:
+            target_column, expression = user_input.split('=', 1)
+            target_column = target_column.strip()
+            expression = expression.strip()
+        else:
+            expression = user_input
+            default_name = f"derived_{auto_idx}"
+            target_column = input(
+                f"New column name (default: {default_name}): "
+            ).strip() or default_name
+
+        if not target_column or not expression:
+            print("Invalid formula. Please provide both target column and expression.")
+            continue
+
+        try:
+            preview_series = _evaluate_formula_expression(expression, reference_df)
+        except Exception as exc:
+            print(f"Failed to parse formula '{user_input}': {exc}")
+            continue
+
+        if np.isinf(preview_series.to_numpy(dtype=float, na_value=np.nan)).any():
+            print(f"Warning: formula '{target_column}={expression}' produced infinity values in preview.")
+
+        rules.append({'target_column': target_column, 'expression': expression})
+        auto_idx += 1
+        print(f"Stored formula: {target_column} = {expression}")
+
+    if rules:
+        print(f"Captured {len(rules)} reconstruction formula(s).")
+    else:
+        print("No reconstruction formulas captured.")
+
+    return rules
+
+
+def apply_reconstruction_formulas(df: pd.DataFrame, rules):
+    if not rules:
+        return df
+
+    base_reference = df.copy()
+    enriched_df = df.copy()
+
+    for rule in rules:
+        target_column = rule['target_column']
+        expression = rule['expression']
+        try:
+            enriched_df[target_column] = _evaluate_formula_expression(expression, base_reference)
+        except Exception as exc:
+            print(f"Warning: could not apply reconstruction formula '{target_column}={expression}': {exc}")
+
+    return enriched_df
 
 def impute_categorical_rf(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
     df_imputed = df.copy()
@@ -241,6 +392,12 @@ def main():
         except ValueError:
             print("Invalid input. No columns dropped.")
 
+    print("\nColumns after drop:")
+    for i, col in enumerate(df.columns):
+        print(f"{i}: {col}")
+
+    reconstruction_rules = collect_reconstruction_formulas(df)
+
     Dn = max(len(df), 500)
     print(f"Target synthetic dataset size: {Dn}")
     
@@ -296,11 +453,18 @@ def main():
     fold_mode_label = 'full Dn per fold' if use_full_fold_synthetic_target else '1:1 with train fold'
     print(f"Using fold synthetic sizing mode: {fold_mode_label}")
 
+    cv_threshold_input = input(
+        "Apply metric-threshold rejection during CV synthetic generation? (y/N): "
+    ).strip().lower()
+    use_cv_thresholds = cv_threshold_input in {'y', 'yes', '1', 'true'}
+    print(f"CV threshold gating is {'enabled' if use_cv_thresholds else 'disabled'}.")
+
     all_results = []
     cv_summary_frames = []
     cv_fold_frames = []
     regression_summary_frames = []
     regression_fold_frames = []
+
     for impute_name, imputed_df in imputations.items():
         #print(imp_df.head())
         outputs = {}
@@ -319,10 +483,10 @@ def main():
         #print(imp_df.head())
         models = {
             'CART': lambda d, n, pfx, persist=True: run_cart(d, n, pfx, current_metadata, persist=persist),
-            #'Gaussian Copula': run_gaussian_copula,
-            #'CTGAN': run_ctgan,
-            #'CopulaGAN': run_copula_gan,
-            #'TVAE': run_tvae
+            'Gaussian Copula': run_gaussian_copula,
+            'CTGAN': run_ctgan,
+            'CopulaGAN': run_copula_gan,
+            'TVAE': run_tvae
         }
         
         for model_display_name, model_func in models.items():
@@ -333,7 +497,26 @@ def main():
 
             for attempt_idx in range(1, max_model_attempts + 1):
                 try:
-                    generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx, persist=False)
+                    # Only CART accepts persist parameter; other models don't
+                    if model_display_name == 'CART':
+                        generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx, persist=False)
+                        model_thresholds = rejection_thresholds
+                    elif model_display_name == 'Gaussian Copula':
+                        generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx)
+                        # Lower cov_score and propensity_score for CTGAN due to observed performance
+                        model_thresholds = rejection_thresholds.copy()
+                        model_thresholds['corr_score'] = 0.40  # Lowered from 0.99
+                        model_thresholds['cov_score'] = 0.20 # Lowered from 0.40
+                        model_thresholds['propensity_score'] = 0  # Lowered from 0.15
+                    else:
+                        generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx)
+                        # Lower cov_score and propensity_score for non-CART models
+                        model_thresholds = rejection_thresholds.copy()
+                        model_thresholds['corr_score'] = 0.18  # Lowered from 0.99
+                        model_thresholds['cov_score'] = 0.05  # Lowered from 0.40
+                        model_thresholds['propensity_score'] = 0  # Lowered from 0.15
+
+                    
                     name, valid_df = generate_valid_samples(
                         model_func=generation_func,
                         imp_df=imp_df_for_generation,
@@ -343,7 +526,7 @@ def main():
                         metadata=current_metadata,
                         constraints=constraints,
                         target_column=target_column,
-                        rejection_thresholds=rejection_thresholds,
+                        rejection_thresholds=model_thresholds,
                         generation_settings=generation_settings
                     )
                     outputs[f"{name}_{impute_name}"] = valid_df
@@ -375,19 +558,54 @@ def main():
                     if col in current_metadata:
                         del current_metadata[col]
 
+        reconstructed_eval_real = apply_reconstruction_formulas(imp_df_real, reconstruction_rules)
+        reconstructed_outputs = {
+            key: apply_reconstruction_formulas(synth_df, reconstruction_rules)
+            for key, synth_df in outputs.items()
+        }
+        reconstructed_metadata = build_aligned_metadata_for_df(reconstructed_eval_real, current_metadata)
+
         for key, synth_df in outputs.items():
             generator_name = key.split('_')[0] if '_' in key else key
-            imp_df_for_generation.to_excel(f'datasets/{impute_name}real_data.xlsx', index=True)
-            synth_df.to_excel(f'datasets/{impute_name}{generator_name}_data.xlsx', index=False)
+            export_real_df = apply_reconstruction_formulas(imp_df_for_generation, reconstruction_rules)
+            export_synth_df = reconstructed_outputs.get(key, synth_df)
+            export_real_df.to_excel(f'datasets/{impute_name}real_data.xlsx', index=True)
+            export_synth_df.to_excel(f'datasets/{impute_name}{generator_name}_data.xlsx', index=False)
 
         print(f"Generating comparative metrics report for {impute_name} imputations...")
         # Evaluate this batch
-        batch_results = evaluate_all(impute_name, imp_df_real, outputs, current_metadata, constraints)
+        batch_results = evaluate_all(
+            impute_name,
+            reconstructed_eval_real,
+            reconstructed_outputs,
+            reconstructed_metadata,
+            constraints
+        )
         all_results.extend(batch_results)
 
         if regression_target_column and regression_target_column in raw_df_for_cv.columns:
             for model_display_name, model_func in models.items():
-                regression_generation_func = lambda d, n, pfx: run_cart(d, n, pfx, metadata, persist=False)
+                if model_display_name == 'CART':
+                    regression_generation_func = (
+                        lambda d, n, pfx, bm=current_metadata:
+                        run_cart(d, n, pfx, build_aligned_metadata_for_df(d, bm), persist=False)
+                    )
+                else:
+                    regression_generation_func = (
+                        lambda d, n, pfx, mf=model_func, bm=current_metadata:
+                        run_sdv_model_with_aligned_metadata(mf, d, n, pfx, bm)
+                    )
+
+                if use_cv_thresholds:
+                    if model_display_name == 'CART':
+                        reg_model_thresholds = regression_rejection_thresholds
+                    else:
+                        reg_model_thresholds = regression_rejection_thresholds.copy()
+                        reg_model_thresholds['cov_score'] = 0.20
+                        reg_model_thresholds['corr_score'] = 0.18
+                else:
+                    reg_model_thresholds = None
+                
                 reg_summary, reg_folds = run_repeated_augmented_regression_cv(
                     real_df=raw_df_for_cv,
                     target_column=regression_target_column,
@@ -397,7 +615,7 @@ def main():
                     metadata=metadata,
                     constraints=constraints,
                     synthetic_target_size=Dn,
-                    rejection_thresholds=regression_rejection_thresholds,
+                    rejection_thresholds=reg_model_thresholds,
                     n_splits=5,
                     n_repeats=cv_repeats,
                     random_state=GLOBAL_RANDOM_SEED,
@@ -407,7 +625,8 @@ def main():
                     max_failed_attempts=generation_settings['max_failed_attempts'],
                     acceptance_rate_floor=generation_settings['acceptance_rate_floor'],
                     synthetic_train_ratio=generation_settings['fold_synthetic_ratio'],
-                    use_full_synthetic_target=generation_settings['use_full_fold_synthetic_target']
+                    use_full_synthetic_target=generation_settings['use_full_fold_synthetic_target'],
+                    reconstruction_rules=reconstruction_rules
                 )
                 if not reg_summary.empty:
                     reg_summary['Target_Column'] = regression_target_column
@@ -418,7 +637,28 @@ def main():
 
         if target_column:
             for model_display_name, model_func in models.items():
-                cv_generation_func = lambda d, n, pfx: run_cart(d, n, pfx, metadata, persist=False)
+                if model_display_name == 'CART':
+                    cv_generation_func = (
+                        lambda d, n, pfx, bm=current_metadata:
+                        run_cart(d, n, pfx, build_aligned_metadata_for_df(d, bm), persist=False)
+                    )
+                else:
+                    cv_generation_func = (
+                        lambda d, n, pfx, mf=model_func, bm=current_metadata:
+                        run_sdv_model_with_aligned_metadata(mf, d, n, pfx, bm)
+                    )
+
+                if use_cv_thresholds:
+                    if model_display_name == 'CART':
+                        cv_model_thresholds = rejection_thresholds
+                    else:
+                        cv_model_thresholds = rejection_thresholds.copy()
+                        cv_model_thresholds['cov_score'] = 0.20
+                        cv_model_thresholds['corr_score'] = 0.18
+                        cv_model_thresholds['propensity_score'] = 0.08
+                else:
+                    cv_model_thresholds = None
+                
                 cv_summary, cv_folds = run_repeated_augmented_cv(
                     real_df=raw_df_for_cv,
                     target_column=target_column,
@@ -428,7 +668,7 @@ def main():
                     metadata=metadata,
                     constraints=constraints,
                     synthetic_target_size=Dn,
-                    rejection_thresholds=rejection_thresholds,
+                    rejection_thresholds=cv_model_thresholds,
                     n_splits=5,
                     n_repeats=cv_repeats,
                     random_state=GLOBAL_RANDOM_SEED,
@@ -438,7 +678,8 @@ def main():
                     max_failed_attempts=generation_settings['max_failed_attempts'],
                     acceptance_rate_floor=generation_settings['acceptance_rate_floor'],
                     synthetic_train_ratio=generation_settings['fold_synthetic_ratio'],
-                    use_full_synthetic_target=generation_settings['use_full_fold_synthetic_target']
+                    use_full_synthetic_target=generation_settings['use_full_fold_synthetic_target'],
+                    reconstruction_rules=reconstruction_rules
                 )
                 if not cv_summary.empty:
                     cv_summary_frames.append(cv_summary)
@@ -450,7 +691,10 @@ def main():
     if all_results:
         metrics_df = pd.DataFrame(all_results).round(3)
         metrics_df.to_excel('evaluation_report.xlsx', index=False)
-        save_metric_comparison_plots(metrics_df, output_dir='plots', model_name='cart')
+        # Generate comparison plots for all generators/models
+        all_generators = metrics_df['Generator'].unique()
+        for gen_name in sorted(all_generators):
+            save_metric_comparison_plots(metrics_df, output_dir='plots', model_name=gen_name)
 
     if cv_summary_frames:
         cv_summary_df = pd.concat(cv_summary_frames, ignore_index=True).round(4)
