@@ -66,7 +66,7 @@ stage_label(2.86, 'Synthetic data generation (5 models)')
 box(M, 1.98, FW, 0.84, '', fill=FILL)
 ax.text(W / 2, 2.62, 'Sequential CART  ·  Gaussian Copula', ha='center', va='center', family=FONT, weight='bold', size=8.5)
 ax.text(W / 2, 2.43, 'CTGAN  ·  CopulaGAN  ·  TVAE', ha='center', va='center', family=FONT, weight='bold', size=8.5)
-ax.text(W / 2, 2.15, 'Physical bounds enforced; batches pass a quality gate', ha='center', va='center', family=FONT, size=7.5)
+ax.text(W / 2, 2.15, 'Rows outside physical bounds are discarded and regenerated', ha='center', va='center', family=FONT, size=7.5)
 arrow(1.98, 1.80)
 
 # 5. evaluation

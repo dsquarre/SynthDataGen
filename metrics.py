@@ -81,6 +81,7 @@ def _decode_categorical_with_encoders(df: pd.DataFrame, encoders: dict):
         vals = series.values.copy()
         valid_mask = vals >= 0
         vals[valid_mask] = np.clip(vals[valid_mask], 0, len(categories) - 1)
+        vals[~valid_mask] = -1   # any negative imputed code (e.g. -2 after rounding) means missing, like -1
         decoded[col] = pd.Categorical.from_codes(vals.astype(int), categories=categories).astype(object)
     return decoded
 

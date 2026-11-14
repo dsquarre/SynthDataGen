@@ -88,7 +88,7 @@ def fidelity_figure(ev, imp, number, out):
             + phrase('wd_score', 'lowest Wasserstein distance', '.2f') + '; '
             + phrase('fd_score', 'lowest Fréchet distance', ',.0f') + '; '
             + phrase('mmd_score', 'lowest MMD', '.4f').replace('lowest MMD is', 'MMD is') + '. '
-            'Each generator was gated with its own thresholds (see methodology), so these values are not a like-for-like comparison.')
+            'Every generator is scored on its raw output after physical-bound filtering (no statistical gate).')
     caption(fig, number, f'Comparative validation metrics of synthetic data generation models under {IMP_LABEL[imp]}', body)
     fig.savefig(out, dpi=DPI)
     plt.close(fig)

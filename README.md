@@ -1,6 +1,6 @@
 # SynthDataGen: Rigorous Tabular Synthetic Data Generation & Cross-Validation Framework
 
-A robust, pipeline-driven framework designed to generate, gate, and evaluate tabular synthetic data under strict statistical thresholds. The architecture enforces zero-leakage, fold-local evaluation environments to benchmark synthetic data augmentation against real-world baselines using advanced classification and regression estimators.
+A robust, pipeline-driven framework designed to generate and evaluate tabular synthetic data under physical constraints. The architecture enforces zero-leakage, fold-local evaluation environments to benchmark synthetic data augmentation against real-world baselines using advanced classification and regression estimators.
 
 ##  Features
 
@@ -16,11 +16,12 @@ To isolate the effects of missing data structures on synthetic generation qualit
 * **`knn` (Instance-based):** Proximity-based imputation using `KNNImputer` (5 neighbors).
 * **`mi` (Indicator-driven):** Median/Mode imputation augmented with explicit `MissingIndicator` tracks, which are programmatically pruned post-generation to prevent metric pollution.
 
-### 3. Adaptive Gated Synthetic Sampling
-Implements a custom in-memory, threshold-gated generator matrix via an adaptive batching protocol loop:
-* **Dynamic Sizing:** Loops generation from `min_batch_size=500` to `max_batch_size=24000` rows.
-* **Multi-Metric Validation Gates:** Every synthetic batch must pass strict statistical validation thresholds against imputed real references across **Marginal distributions, Boundary constraints, Pearson/Spearman Correlations, and Covariance matrix alignment** before acceptance.
-* **Auto-Decay Budgets:** Monitors consecutive failures to gracefully decay acceptance tolerances down to an absolute floor ($0.01$).
+### 3. Constraint-Checked Synthetic Sampling
+Five generators (Sequential CART, Gaussian Copula, CTGAN, CopulaGAN, TVAE) run through one in-memory, adaptive batching loop:
+* **Physical Validity:** Every synthetic row must satisfy the training data's per-column bounds and any user-defined cross-column constraints; violating rows are discarded and regenerated.
+* **No Statistical Gate:** Batches are not filtered on fidelity metrics, so all generators are compared on their raw output and the reported fidelity is not inflated by selection.
+* **Dynamic Sizing:** Batch size (`min_batch_size=500` to `max_batch_size=24000` rows) adapts to the observed share of valid rows.
+* **Class Balance Without Duplicates:** When a classification target is set, synthetic rows are generated to equal per-class quotas instead of being oversampled.
 
 ---
 
@@ -44,12 +45,12 @@ graph TD
     A[Start: run_all.py] --> B[Load & Sanitize Target Data]
     B --> C[Initial Categorical Repair via Random Forest]
     C --> D[Branching Imputations: Iterative / KNN / Missing Indicator]
-    D --> E[Compute Constraints & Prompt Threshold Gates]
-    E --> F[Adaptive CART Batch Generation Loop]
-    F --> G{Threshold Gate Verification}
-    G -- Fail --> H[Increment Fails & Decay Acceptance Floor]
-    H --> F
-    G -- Pass --> I[Accumulate and Trim to Target Size Dn]
+    D --> E[Compute Physical Constraints]
+    E --> F[Adaptive Batch Generation: 5 Generators]
+    F --> G[Drop Rows Violating Constraints]
+    G --> H{Target Size Dn Reached?}
+    H -- No --> F
+    H -- Yes --> I[Trim to Target Size Dn]
     I --> J[Run Fold-Local Augmented Regression / Classification CV]
     J --> K[Output Excel Metric Reports & Comparative Plots]
 ```
@@ -61,7 +62,7 @@ graph TD
 ### Prerequisites & Installation
 Ensure you have working C++ compilers for tree-based packages, then set up the repository:
 ```bash
-git clone https://github.com
+git clone https://github.com/dsquarre/SynthDataGen.git
 cd SynthDataGen
 pip install -r requirements.txt
 ```
@@ -74,4 +75,4 @@ The interactive terminal will prompt you to configure:
 1. Column drops and explicit metadata overrides (`n` for numerical, `c` for categorical).
 2. Random Over-Sampling (ROS) indices for balancing highly skewed classification labels.
 3. Target regression parameters to initiate multi-model evaluation (`XGBRegressor` + `RandomForestRegressor`).
-4. Rejection threshold metrics to override baseline generative convergence criteria.
+4. Repeated cross-validation settings and the augmentation ratio (1:1 with each training fold, or a fixed `Dn` rows per fold).

@@ -62,3 +62,23 @@ a deviation, with the reason.
 
 **Registration:** this entry must be committed and pushed to a public repository (or posted on OSF) before E1
 runs. The E1 script was tested only on synthetic toy data before registration.
+
+**Registered:** commit 0c3b2b0, public repository github.com/dsquarre/SynthDataGen, pushed 2026-11-14 11:01:39 UTC
+(GitHub push record). E1 had not been run on any real dataset at that time.
+
+**Deviation (added after registration, 2026-11-14):** at the user's request, E1 is also run on the circular HSS
+CFST subset (93 tests, `datasets/cfst_circular_hss.xlsx`, target N_Test_kN), sizes {25, 50}, otherwise the same
+design. This dataset was excluded in the registered plan, so its results are exploratory: they are reported
+separately and do not count towards the main claim.
+
+**Deviation (code fix during the run, 2026-11-14 19:25 IST):** the D1 run stopped at draw 14 (n = 25) with a
+crash in the shared imputation helper (`metrics._decode_categorical_with_encoders`): a confinement type present
+in the test set but absent from the 25 training rows was imputed to a category code below -1, which the decoder
+rejected. The fix treats every negative imputed code as missing, which is how codes in [-1.5, 0) were already
+handled, so it changes only the case that previously crashed; draws 1-13 and all other runs are unaffected. D1
+was resumed from draw 14 with the fixed code. The design and decision rule are unchanged.
+
+**Result (2026-11-14, `runs/2026-11-14_E1/`):** main claim not supported. Registered cells: 0 Benefit, 45 Harm,
+45 no detectable effect out of 90 (D1: 30 Harm / 20 none; D2: 15 Harm / 25 none). No generation failures.
+Exploratory circular CFST: 0 Benefit, 12 Harm, 8 none. Summaries: `e1_registered_summary.csv`,
+`e1x_cfst_circ_exploratory_summary.csv`; figure `e1_figure.png`.
