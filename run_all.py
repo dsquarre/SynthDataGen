@@ -6,19 +6,19 @@ import ast
 import re
 from synthpop.synth import run_cart
 from sdv_all import run_copula_gan,run_ctgan, run_gaussian_copula, run_tvae
-from ctab_gan_plus import ctabganplus
 from metrics import (
     evaluate_all,
     run_repeated_augmented_cv,
     run_repeated_augmented_regression_cv,
     save_metric_comparison_plots,
     save_regression_metric_plots,
-    generate_valid_samples_adaptive
+    generate_valid_samples_adaptive,
+    METRIC_DIRECTIONS
 )
 from ros import apply_ros,add_constraints
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import KNNImputer, IterativeImputer, MissingIndicator
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier
 
 GLOBAL_RANDOM_SEED = 2026
 
@@ -29,7 +29,7 @@ DEFAULT_REJECTION_THRESHOLDS = {
     'corr_score': 0.65,
     'cov_score': 0.40,
     'violation_rate': 0.001,
-    'propensity_score': 0.15
+    'propensity_score': 0.1
 }
 
 DEFAULT_GENERATION_SETTINGS = {
@@ -61,6 +61,10 @@ def parse_metric_thresholds(input_text: str, defaults: dict):
         metric_name, raw_value = entry.split('=', 1)
         metric_name = metric_name.strip()
         raw_value = raw_value.strip()
+
+        if metric_name not in METRIC_DIRECTIONS:
+            print(f"Skipping unknown metric '{metric_name}' (valid: {', '.join(METRIC_DIRECTIONS)})")
+            continue
 
         try:
             parsed[metric_name] = float(raw_value)
@@ -501,19 +505,20 @@ def main():
                     if model_display_name == 'CART':
                         generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx, persist=False)
                         model_thresholds = rejection_thresholds
-                    elif model_display_name == 'Gaussian Copula':
+                    elif model_display_name == 'CTGAN':
                         generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx)
                         # Lower cov_score and propensity_score for CTGAN due to observed performance
                         model_thresholds = rejection_thresholds.copy()
-                        model_thresholds['corr_score'] = 0.40  # Lowered from 0.99
-                        model_thresholds['cov_score'] = 0.20 # Lowered from 0.40
+                        model_thresholds['corr_score'] = 0.20  # Lowered from 0.99
+                        model_thresholds['cov_score'] = 0.1 # Lowered from 0.40
                         model_thresholds['propensity_score'] = 0  # Lowered from 0.15
                     else:
                         generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx)
                         # Lower cov_score and propensity_score for non-CART models
                         model_thresholds = rejection_thresholds.copy()
-                        model_thresholds['corr_score'] = 0.18  # Lowered from 0.99
-                        model_thresholds['cov_score'] = 0.05  # Lowered from 0.40
+                        model_thresholds['Marginal'] = 0.15
+                        model_thresholds['corr_score'] = 0.15  # Lowered from 0.99
+                        model_thresholds['cov_score'] = 0.1  # Lowered from 0.40
                         model_thresholds['propensity_score'] = 0  # Lowered from 0.15
 
                     
@@ -653,9 +658,10 @@ def main():
                         cv_model_thresholds = rejection_thresholds
                     else:
                         cv_model_thresholds = rejection_thresholds.copy()
-                        cv_model_thresholds['cov_score'] = 0.20
-                        cv_model_thresholds['corr_score'] = 0.18
-                        cv_model_thresholds['propensity_score'] = 0.08
+                        cv_model_thresholds['Marginal'] = 0.35
+                        cv_model_thresholds['cov_score'] = 0.10
+                        cv_model_thresholds['corr_score'] = 0.10
+                        cv_model_thresholds['propensity_score'] = 0
                 else:
                     cv_model_thresholds = None
                 

@@ -1,56 +1,44 @@
-import pandas as pd
-import numpy as np
 import json
 import logging
 import warnings
 
-warnings.filterwarnings('ignore')
-logging.getLogger('sdv').setLevel(logging.ERROR)
-logging.getLogger('rdt').setLevel(logging.ERROR)
-logging.getLogger('copulas').setLevel(logging.ERROR)
-logging.getLogger('SingleTableSynthesizer').setLevel(logging.ERROR)
-logging.getLogger('GaussianCopulaSynthesizer').setLevel(logging.ERROR)
-logging.getLogger('CTGANSynthesizer').setLevel(logging.ERROR)
-logging.getLogger('CopulaGANSynthesizer').setLevel(logging.ERROR)
-logging.getLogger('TVAESynthesizer').setLevel(logging.ERROR)
-
 from sdv.metadata import Metadata
 from sdv.single_table import GaussianCopulaSynthesizer, CTGANSynthesizer, CopulaGANSynthesizer, TVAESynthesizer
 
-def run_gaussian_copula(df, num_rows, output_prefix):
+from seeding import next_seed, seed_everything
+
+warnings.filterwarnings('ignore')
+for _logger in ('sdv', 'rdt', 'copulas', 'SingleTableSynthesizer', 'GaussianCopulaSynthesizer',
+                'CTGANSynthesizer', 'CopulaGANSynthesizer', 'TVAESynthesizer'):
+    logging.getLogger(_logger).setLevel(logging.ERROR)
+
+
+def _fit_and_sample(synthesizer_cls, df, num_rows):
+    """Fit an SDV synthesizer on df and sample num_rows, seeded per call."""
     with open('sdv_metadata.json', 'r', encoding='utf-8') as f:
-        meta_dict = json.load(f)
-    metadata = Metadata.load_from_dict(meta_dict)
-    synthesizer = GaussianCopulaSynthesizer(metadata)
+        metadata = Metadata.load_from_dict(json.load(f))
+    seed = next_seed()
+    seed_everything(seed)  # controls fitting (torch / numpy)
+    synthesizer = synthesizer_cls(metadata)
     synthesizer.fit(df)
-    synthetic_data = synthesizer.sample(num_rows=num_rows)
-    return 'gaussian_copula', synthetic_data
+    # SDV 1.x samples with a fixed internal seed unless one is set, which made
+    # every batch identical; pass the per-call seed instead (private API, SDV<2).
+    synthesizer._set_random_state(seed)
+    return synthesizer.sample(num_rows=num_rows)
+
+
+# output_prefix is unused but kept so all generators share one call signature.
+def run_gaussian_copula(df, num_rows, output_prefix):
+    return 'gaussian_copula', _fit_and_sample(GaussianCopulaSynthesizer, df, num_rows)
+
 
 def run_ctgan(df, num_rows, output_prefix):
-    with open('sdv_metadata.json', 'r', encoding='utf-8') as f:
-        meta_dict = json.load(f)
-    metadata = Metadata.load_from_dict(meta_dict)
-    synthesizer = CTGANSynthesizer(metadata)
-    synthesizer.fit(df)
-    synthetic_data = synthesizer.sample(num_rows=num_rows)
-    return 'ctgan',synthetic_data
+    return 'ctgan', _fit_and_sample(CTGANSynthesizer, df, num_rows)
+
 
 def run_copula_gan(df, num_rows, output_prefix):
-    with open('sdv_metadata.json', 'r', encoding='utf-8') as f:
-        meta_dict = json.load(f)
-    metadata = Metadata.load_from_dict(meta_dict)
-    synthesizer = CopulaGANSynthesizer(metadata)
-    synthesizer.fit(df)
-    synthetic_data = synthesizer.sample(num_rows=num_rows)
-    synthetic_data.to_excel(f'datasets/{output_prefix}copula_gan_synthetic_data.xlsx', index=False)
-    return 'copulagan', synthetic_data
+    return 'copulagan', _fit_and_sample(CopulaGANSynthesizer, df, num_rows)
+
 
 def run_tvae(df, num_rows, output_prefix):
-    with open('sdv_metadata.json', 'r', encoding='utf-8') as f:
-        meta_dict = json.load(f)
-    metadata = Metadata.load_from_dict(meta_dict)
-    synthesizer = TVAESynthesizer(metadata)
-    synthesizer.fit(df)
-    synthetic_data = synthesizer.sample(num_rows=num_rows)
-    synthetic_data.to_excel(f'datasets/{output_prefix}tvae_synthetic_data.xlsx', index=False)
-    return 'tvae', synthetic_data
+    return 'tvae', _fit_and_sample(TVAESynthesizer, df, num_rows)

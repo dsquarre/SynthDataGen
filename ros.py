@@ -1,16 +1,9 @@
-import pandas as pd
-import numpy as np
-
-from scipy.stats import chi2
 import numpy as np
 import pandas as pd
 from scipy.stats import chi2
 
 ROS_RANDOM_SEED = 2026
 
-import numpy as np
-import pandas as pd
-from scipy.stats import chi2
 
 def drop_covariance_violators(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict, threshold_percentile=0.9999999999) -> pd.DataFrame:
     """
@@ -117,7 +110,6 @@ def apply_ros(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
     balanced_df = pd.concat(balanced_dfs).sample(frac=1, random_state=ROS_RANDOM_SEED).reset_index(drop=True)
     return balanced_df
 
-import pandas as pd
 
 def apply_multi_col_ros(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
     """

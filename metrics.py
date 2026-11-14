@@ -313,13 +313,18 @@ def evaluate_threshold_gate(
     thresholds: dict | None = None,
     metric_directions: dict | None = None
 ):
-    metric_output = eval(real_df, synth_df, metadata, constraints)
+    metric_output = compute_metrics(real_df, synth_df, metadata, constraints)
     metric_row = summarize_metrics(metric_output)
 
     if not thresholds:
         return True, {}, metric_row
 
     directions = metric_directions or METRIC_DIRECTIONS
+    unknown = [name for name in thresholds if name not in directions]
+    if unknown:
+        raise ValueError(
+            f"Unknown threshold metric(s) {unknown}; valid names are {sorted(directions)}"
+        )
     failed = {}
 
     for metric_name, threshold in thresholds.items():
@@ -641,7 +646,7 @@ def propensity_score(real_df,synth_df,metadata):
     return score
 
 
-def eval(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict, constraints):
+def compute_metrics(real_df: pd.DataFrame, synth_df: pd.DataFrame, metadata: dict, constraints):
     output = {}
     output['marginals'] = marginal_distribution(real_df, synth_df, metadata)
     output['boundary_score'] = boundary_adherence(real_df, synth_df, metadata)
@@ -818,6 +823,26 @@ def _prepare_classification_data(train_df: pd.DataFrame, test_df: pd.DataFrame, 
     return X_train, X_test, y_train_encoded, y_test_encoded
 
 
+def _build_classifiers(n_classes: int, random_state: int) -> dict:
+    """Fresh, identically configured classifiers for one training scenario."""
+    xgb_params = dict(
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        random_state=random_state,
+        n_jobs=-1
+    )
+    if n_classes > 2:
+        xgb_params.update(objective='multi:softprob', num_class=n_classes, eval_metric='mlogloss')
+    else:
+        xgb_params.update(objective='binary:logistic', eval_metric='logloss')
+
+    return {
+        'RandomForest': RandomForestClassifier(n_estimators=300, random_state=random_state, n_jobs=-1),
+        'XGBoost': xgb.XGBClassifier(**xgb_params)
+    }
+
+
 def run_repeated_augmented_cv(
     real_df: pd.DataFrame,
     target_column: str,
@@ -921,71 +946,48 @@ def run_repeated_augmented_cv(
 
         augmented_train = pd.concat([real_train_ros, synthetic_ros], ignore_index=True)
 
-        X_train, X_test, y_train, y_test = _prepare_classification_data(
-            augmented_train,
-            real_test,
-            target_column
-        )
+        # Both scenarios are scored on the same untouched real test fold, so the
+        # augmented-vs-real-only difference is paired per fold.
+        training_scenarios = [
+            ('FoldLocal_TrainAugmented_TestReal', augmented_train),
+            ('Real_Only_TestReal', real_train_ros),
+        ]
 
-        n_classes = len(np.unique(y_train))
-
-        models = {
-            'RandomForest': RandomForestClassifier(
-                n_estimators=300,
-                random_state=random_state,
-                n_jobs=-1
-            )
-        }
-
-        if n_classes > 2:
-            models['XGBoost'] = xgb.XGBClassifier(
-                n_estimators=300,
-                max_depth=4,
-                learning_rate=0.05,
-                objective='multi:softprob',
-                num_class=n_classes,
-                eval_metric='mlogloss',
-                random_state=random_state,
-                n_jobs=-1
-            )
-        else:
-            models['XGBoost'] = xgb.XGBClassifier(
-                n_estimators=300,
-                max_depth=4,
-                learning_rate=0.05,
-                objective='binary:logistic',
-                eval_metric='logloss',
-                random_state=random_state,
-                n_jobs=-1
+        for eval_label, train_frame in training_scenarios:
+            X_train, X_test, y_train, y_test = _prepare_classification_data(
+                train_frame,
+                real_test,
+                target_column
             )
 
-        for model_name, model in models.items():
-            model.fit(X_train, y_train)
-            predictions = model.predict(X_test)
+            for model_name, model in _build_classifiers(len(np.unique(y_train)), random_state).items():
+                model.fit(X_train, y_train)
+                predictions = model.predict(X_test)
 
-            row = {
-                'Imputation': imputation_name,
-                'Synthetic_Model': synthetic_model_name,
-                'Classifier': model_name,
-                'Fold': fold_idx,
-                'accuracy': accuracy_score(y_test, predictions),
-                'balanced_accuracy': balanced_accuracy_score(y_test, predictions),
-                'f1_macro': f1_score(y_test, predictions, average='macro', zero_division=0)
-            }
+                row = {
+                    'Imputation': imputation_name,
+                    'Synthetic_Model': synthetic_model_name,
+                    'Evaluation': eval_label,
+                    'Classifier': model_name,
+                    'Fold': fold_idx,
+                    'accuracy': accuracy_score(y_test, predictions),
+                    'balanced_accuracy': balanced_accuracy_score(y_test, predictions),
+                    'f1_macro': f1_score(y_test, predictions, average='macro', zero_division=0)
+                }
 
-            auc_value = np.nan
-            if hasattr(model, 'predict_proba') and len(np.unique(y_test)) > 1:
-                probabilities = model.predict_proba(X_test)
-                try:
-                    if probabilities.shape[1] == 2:
-                        auc_value = roc_auc_score(y_test, probabilities[:, 1])
-                    else:
-                        auc_value = roc_auc_score(y_test, probabilities, multi_class='ovr')
-                except Exception:
-                    auc_value = np.nan
+                auc_value = np.nan
+                if hasattr(model, 'predict_proba') and len(np.unique(y_test)) > 1:
+                    probabilities = model.predict_proba(X_test)
+                    try:
+                        if probabilities.shape[1] == 2:
+                            auc_value = roc_auc_score(y_test, probabilities[:, 1])
+                        else:
+                            auc_value = roc_auc_score(y_test, probabilities, multi_class='ovr')
+                    except Exception:
+                        auc_value = np.nan
 
-            row['roc_auc'] = auc_value
-            fold_rows.append(row)
+                row['roc_auc'] = auc_value
+                fold_rows.append(row)
 
         print(
             f"[Classification CV] {imputation_name} | {synthetic_model_name} | "
@@ -998,7 +1000,7 @@ def run_repeated_augmented_cv(
 
     summary_df = (
         fold_df
-        .groupby(['Imputation', 'Synthetic_Model', 'Classifier'], as_index=False)
+        .groupby(['Imputation', 'Synthetic_Model', 'Evaluation', 'Classifier'], as_index=False)
         .agg(
             accuracy_mean=('accuracy', 'mean'),
             accuracy_std=('accuracy', 'std'),
@@ -1519,7 +1521,7 @@ def save_regression_metric_plots(regression_summary_df: pd.DataFrame, output_dir
 def evaluate_all(name,real_df: pd.DataFrame, outputs, metadata, constraints):
     results_list = []
     for key, synth_df in outputs.items():
-        metrics = eval(real_df, synth_df, metadata, constraints)
+        metrics = compute_metrics(real_df, synth_df, metadata, constraints)
         row = summarize_metrics(metrics)
         row['Model'] = key
         row['Imputation'] = name

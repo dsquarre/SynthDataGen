@@ -2,16 +2,14 @@ import pandas as pd
 import numpy as np
 from .data import DataProcessor
 from .cart import CARTMethod
-
-
-CART_RANDOM_SEED = 2026
+from seeding import next_seed
 
 
 def run_cart(df, cart_samples, impute, metadata, persist=True):
     processor = DataProcessor(metadata)
     processed_data = processor.preprocess(df)
     
-    cart = CARTMethod(metadata, smoothing=True, minibucket=5, random_state=CART_RANDOM_SEED)
+    cart = CARTMethod(metadata, smoothing=True, minibucket=5, random_state=next_seed())  # fresh seed per call so batches differ
     cart.fit(processed_data)
     
     synthetic_processed = cart.sample(cart_samples)
