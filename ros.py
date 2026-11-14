@@ -103,9 +103,13 @@ def apply_ros(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
     max_size = df[target_col].value_counts().max()
     balanced_dfs = []
     for class_name, group in df.groupby(target_col):
-        # Sample with replacement to bring this category up to max_size
-        oversampled_group = group.sample(n=max_size, replace=True, random_state=ROS_RANDOM_SEED)
-        balanced_dfs.append(oversampled_group)
+        # Keep every original row; add sampled copies only up to the majority count.
+        # (Resampling the majority class too would drop some of its rows and duplicate others.)
+        n_extra = max_size - len(group)
+        if n_extra > 0:
+            extra = group.sample(n=n_extra, replace=True, random_state=ROS_RANDOM_SEED)
+            group = pd.concat([group, extra])
+        balanced_dfs.append(group)
         
     balanced_df = pd.concat(balanced_dfs).sample(frac=1, random_state=ROS_RANDOM_SEED).reset_index(drop=True)
     return balanced_df

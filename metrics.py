@@ -691,6 +691,15 @@ def generate_valid_samples_adaptive(
 
     max_total_generated = max(int(target_size * max_total_generated_multiplier), min_batch_size)
 
+    # Class balancing (replaces ROS on synthetic batches): each class gets an equal
+    # quota of the target size, filled with distinct generated rows, so the output
+    # is balanced without duplicating any row.
+    class_quota = None
+    if ros_target_column and ros_target_column in real_reference_df.columns:
+        classes = sorted(real_reference_df[ros_target_column].dropna().unique(), key=str)
+        base, extra = divmod(target_size, len(classes))
+        class_quota = {c: base + (1 if i < extra else 0) for i, c in enumerate(classes)}
+
     while (
         len(valid_data) < target_size
         and consecutive_failed_attempts < max_failed_attempts
@@ -717,8 +726,6 @@ def generate_valid_samples_adaptive(
         model_name, temp_df = model_func(imp_df, batch_size, prefix)
         total_generated += batch_size
 
-        if ros_target_column:
-            temp_df = apply_ros(temp_df, ros_target_column)
         temp_df = drop_constraint_violators(temp_df, constraints)
 
         observed_acceptance_rate = len(temp_df) / batch_size if batch_size else 0.0
@@ -769,6 +776,17 @@ def generate_valid_samples_adaptive(
                 )
             continue
 
+        if class_quota is not None:
+            # The gate above judged the raw batch against the (unbalanced) real data;
+            # now keep only rows for classes that are still below quota.
+            picked = []
+            for cls, quota in class_quota.items():
+                have = int((valid_data[ros_target_column] == cls).sum()) if not valid_data.empty else 0
+                if quota - have > 0:
+                    picked.append(temp_df[temp_df[ros_target_column] == cls].head(quota - have))
+            temp_df = pd.concat(picked, ignore_index=True) if picked else temp_df.iloc[0:0]
+            observed_acceptance_rate = len(temp_df) / batch_size if batch_size else 0.0
+
         estimated_acceptance_rate = max(
             acceptance_rate_floor,
             0.5 * estimated_acceptance_rate + 0.5 * observed_acceptance_rate
@@ -789,7 +807,11 @@ def generate_valid_samples_adaptive(
             f"({consecutive_failed_attempts} consecutive at stop). Batch iterations: {batch_iteration}/{MAX_ITERATIONS}."
         )
 
-    return model_name, valid_data.iloc[:target_size].reset_index(drop=True)
+    output = valid_data.iloc[:target_size]
+    if class_quota is not None:
+        # Rows were appended class by class; shuffle so order carries no class pattern.
+        output = output.sample(frac=1, random_state=DEFAULT_RANDOM_SEED)
+    return model_name, output.reset_index(drop=True)
 
 
 def _prepare_classification_data(train_df: pd.DataFrame, test_df: pd.DataFrame, target_column: str):
@@ -923,7 +945,7 @@ def run_repeated_augmented_cv(
                 prefix=f'{imputation_name}_fold{fold_idx}',
                 metadata=metadata,
                 constraints=fold_constraints,
-                ros_target_column=None,
+                ros_target_column=target_column,  # balanced by generation, not by ROS
                 rejection_thresholds=rejection_thresholds,
                 min_batch_size=min_batch_size,
                 max_batch_size=max_batch_size,
@@ -941,10 +963,11 @@ def run_repeated_augmented_cv(
 
         synthetic_fold = _apply_reconstruction_rules(synthetic_fold, reconstruction_rules)
 
+        # ROS stays on the real training fold only (in-fold, after the split).
+        # The synthetic fold is already class-balanced by the generator loop.
         real_train_ros = apply_ros(real_train, target_column)
-        synthetic_ros = apply_ros(synthetic_fold, target_column)
 
-        augmented_train = pd.concat([real_train_ros, synthetic_ros], ignore_index=True)
+        augmented_train = pd.concat([real_train_ros, synthetic_fold], ignore_index=True)
 
         # Both scenarios are scored on the same untouched real test fold, so the
         # augmented-vs-real-only difference is paired per fold.

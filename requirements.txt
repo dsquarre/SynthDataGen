@@ -1,8 +1,14 @@
-xgboost
-sdv
-matplotlib
-scikit-learn
-pandas
-numpy
-scipy
-openpyxl
+# Tested with Python 3.11 (full pipeline run, 2026-11-14).
+# sdv must stay below 2.0: SDV 2.x changed the fit() API and sdv_all.py relies on 1.x internals.
+# For a CPU-only torch (much smaller), install it first:
+#   pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
+pandas==2.3.3
+numpy==2.4.6
+scipy==1.17.1
+scikit-learn==1.9.1
+xgboost==3.4.2
+sdv==1.39.0
+torch==2.15.0
+matplotlib==3.11.2
+seaborn==0.13.2
+openpyxl==3.1.5

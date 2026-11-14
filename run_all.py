@@ -15,12 +15,13 @@ from metrics import (
     generate_valid_samples_adaptive,
     METRIC_DIRECTIONS
 )
-from ros import apply_ros,add_constraints
+from ros import add_constraints
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import KNNImputer, IterativeImputer, MissingIndicator
 from sklearn.ensemble import RandomForestClassifier
 
 GLOBAL_RANDOM_SEED = 2026
+GENERATED_DIR = 'generated'  # imputed + synthetic outputs; datasets/ holds only input data
 
 
 DEFAULT_REJECTION_THRESHOLDS = {
@@ -354,6 +355,7 @@ def generate_valid_samples(
 def main():
     # Ensure output directories exist
     os.makedirs('datasets', exist_ok=True)
+    os.makedirs(GENERATED_DIR, exist_ok=True)
     os.makedirs('plots', exist_ok=True)
 
     filename = input("Enter dataset filename in datasets/ folder (default: data.csv): ").strip()
@@ -475,7 +477,9 @@ def main():
         generation_settings = DEFAULT_GENERATION_SETTINGS.copy()
         generation_settings['use_full_fold_synthetic_target'] = use_full_fold_synthetic_target
         imp_df_real = imputed_df.copy()
-        imp_df_for_generation = apply_ros(imp_df_real, target_column) if target_column else imp_df_real.copy()
+        # Generators are fitted on the unbalanced real data (no ROS duplicates); class
+        # balance of the synthetic output is handled inside the generation loop.
+        imp_df_for_generation = imp_df_real.copy()
             
         # Update metadata for this imputation (e.g. if MI added columns)
         current_metadata = metadata.copy()
@@ -574,8 +578,8 @@ def main():
             generator_name = key.split('_')[0] if '_' in key else key
             export_real_df = apply_reconstruction_formulas(imp_df_for_generation, reconstruction_rules)
             export_synth_df = reconstructed_outputs.get(key, synth_df)
-            export_real_df.to_excel(f'datasets/{impute_name}real_data.xlsx', index=True)
-            export_synth_df.to_excel(f'datasets/{impute_name}{generator_name}_data.xlsx', index=False)
+            export_real_df.to_excel(os.path.join(GENERATED_DIR, f'{impute_name}real_data.xlsx'), index=True)
+            export_synth_df.to_excel(os.path.join(GENERATED_DIR, f'{impute_name}{generator_name}_data.xlsx'), index=False)
 
         print(f"Generating comparative metrics report for {impute_name} imputations...")
         # Evaluate this batch

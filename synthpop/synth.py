@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 from .data import DataProcessor
@@ -16,8 +17,9 @@ def run_cart(df, cart_samples, impute, metadata, persist=True):
     cart_df = processor.postprocess(synthetic_processed)
 
     if persist:
-        df.to_excel(f'datasets/{impute}real_data.xlsx', index=True)
-        cart_df.to_excel(f'datasets/{impute}cart_data.xlsx', index=False)
+        os.makedirs('generated', exist_ok=True)
+        df.to_excel(f'generated/{impute}real_data.xlsx', index=True)
+        cart_df.to_excel(f'generated/{impute}cart_data.xlsx', index=False)
     
     return 'cart', cart_df
 '''
