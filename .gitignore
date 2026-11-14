@@ -62,3 +62,9 @@ sdv_metadata.json
 Danish_Dubey_UGP (1).pptx
 generated/
 runs/
+
+# Presentations, rendered exports and downloaded archives
+*.pptx
+*.pdf
+*.zip
+.~lock.*#

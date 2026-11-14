@@ -12,8 +12,7 @@ from metrics import (
     run_repeated_augmented_regression_cv,
     save_metric_comparison_plots,
     save_regression_metric_plots,
-    generate_valid_samples_adaptive,
-    METRIC_DIRECTIONS
+    generate_valid_samples_adaptive
 )
 from ros import add_constraints
 from sklearn.experimental import enable_iterative_imputer
@@ -24,14 +23,8 @@ GLOBAL_RANDOM_SEED = 2026
 GENERATED_DIR = 'generated'  # imputed + synthetic outputs; datasets/ holds only input data
 
 
-DEFAULT_REJECTION_THRESHOLDS = {
-    'Marginal': 0.70,
-    'boundary_score': 0.99,
-    'corr_score': 0.65,
-    'cov_score': 0.40,
-    'violation_rate': 0.001,
-    'propensity_score': 0.1
-}
+# No statistical (metric-threshold) gate: generators are compared on their raw output. Physical
+# constraints (training-data bounds, user constraints) are still enforced row by row for every model.
 
 DEFAULT_GENERATION_SETTINGS = {
     'min_batch_size': 500,
@@ -43,41 +36,6 @@ DEFAULT_GENERATION_SETTINGS = {
     'fold_synthetic_ratio': 1.0,
     'use_full_fold_synthetic_target': False
 }
-
-
-def parse_metric_thresholds(input_text: str, defaults: dict):
-    if not input_text.strip():
-        return defaults.copy()
-
-    parsed = {}
-    for chunk in input_text.split(','):
-        entry = chunk.strip()
-        if not entry:
-            continue
-
-        if '=' not in entry:
-            print(f"Skipping malformed threshold entry: {entry}")
-            continue
-
-        metric_name, raw_value = entry.split('=', 1)
-        metric_name = metric_name.strip()
-        raw_value = raw_value.strip()
-
-        if metric_name not in METRIC_DIRECTIONS:
-            print(f"Skipping unknown metric '{metric_name}' (valid: {', '.join(METRIC_DIRECTIONS)})")
-            continue
-
-        try:
-            parsed[metric_name] = float(raw_value)
-        except ValueError:
-            print(f"Skipping non-numeric threshold: {entry}")
-
-    if not parsed:
-        return defaults.copy()
-
-    merged = defaults.copy()
-    merged.update(parsed)
-    return merged
 
 
 def build_aligned_metadata_for_df(df: pd.DataFrame, base_metadata: dict) -> dict:
@@ -430,22 +388,6 @@ def main():
     
     constraints = add_constraints(df)
 
-    print("\nDefault rejection thresholds:")
-    for metric_name, threshold in DEFAULT_REJECTION_THRESHOLDS.items():
-        print(f"  {metric_name} = {threshold}")
-
-    threshold_input = input(
-        "Enter custom thresholds as metric=value pairs (comma-separated), or press Enter for defaults: "
-    ).strip()
-    rejection_thresholds = parse_metric_thresholds(threshold_input, DEFAULT_REJECTION_THRESHOLDS)
-    regression_rejection_thresholds = {
-        metric: threshold
-        for metric, threshold in rejection_thresholds.items()
-        if metric != 'propensity_score'
-    }
-    print(f"Using rejection thresholds: {rejection_thresholds}")
-    print(f"Using regression thresholds (privacy removed): {regression_rejection_thresholds}")
-
     repeats_input = input("Repeated 5-fold CV repeats (default: 3): ").strip()
     try:
         cv_repeats = int(repeats_input) if repeats_input else 3
@@ -458,12 +400,6 @@ def main():
     use_full_fold_synthetic_target = fold_target_mode_input in {'2', 'full', 'dn', 'all'}
     fold_mode_label = 'full Dn per fold' if use_full_fold_synthetic_target else '1:1 with train fold'
     print(f"Using fold synthetic sizing mode: {fold_mode_label}")
-
-    cv_threshold_input = input(
-        "Apply metric-threshold rejection during CV synthetic generation? (y/N): "
-    ).strip().lower()
-    use_cv_thresholds = cv_threshold_input in {'y', 'yes', '1', 'true'}
-    print(f"CV threshold gating is {'enabled' if use_cv_thresholds else 'disabled'}.")
 
     all_results = []
     cv_summary_frames = []
@@ -508,24 +444,9 @@ def main():
                     # Only CART accepts persist parameter; other models don't
                     if model_display_name == 'CART':
                         generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx, persist=False)
-                        model_thresholds = rejection_thresholds
-                    elif model_display_name == 'CTGAN':
-                        generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx)
-                        # Lower cov_score and propensity_score for CTGAN due to observed performance
-                        model_thresholds = rejection_thresholds.copy()
-                        model_thresholds['corr_score'] = 0.20  # Lowered from 0.99
-                        model_thresholds['cov_score'] = 0.1 # Lowered from 0.40
-                        model_thresholds['propensity_score'] = 0  # Lowered from 0.15
                     else:
                         generation_func = lambda d, n, pfx, mf=model_func: mf(d, n, pfx)
-                        # Lower cov_score and propensity_score for non-CART models
-                        model_thresholds = rejection_thresholds.copy()
-                        model_thresholds['Marginal'] = 0.15
-                        model_thresholds['corr_score'] = 0.15  # Lowered from 0.99
-                        model_thresholds['cov_score'] = 0.1  # Lowered from 0.40
-                        model_thresholds['propensity_score'] = 0  # Lowered from 0.15
 
-                    
                     name, valid_df = generate_valid_samples(
                         model_func=generation_func,
                         imp_df=imp_df_for_generation,
@@ -535,7 +456,7 @@ def main():
                         metadata=current_metadata,
                         constraints=constraints,
                         target_column=target_column,
-                        rejection_thresholds=model_thresholds,
+                        rejection_thresholds=None,
                         generation_settings=generation_settings
                     )
                     outputs[f"{name}_{impute_name}"] = valid_df
@@ -605,16 +526,6 @@ def main():
                         run_sdv_model_with_aligned_metadata(mf, d, n, pfx, bm)
                     )
 
-                if use_cv_thresholds:
-                    if model_display_name == 'CART':
-                        reg_model_thresholds = regression_rejection_thresholds
-                    else:
-                        reg_model_thresholds = regression_rejection_thresholds.copy()
-                        reg_model_thresholds['cov_score'] = 0.20
-                        reg_model_thresholds['corr_score'] = 0.18
-                else:
-                    reg_model_thresholds = None
-                
                 reg_summary, reg_folds = run_repeated_augmented_regression_cv(
                     real_df=raw_df_for_cv,
                     target_column=regression_target_column,
@@ -624,7 +535,7 @@ def main():
                     metadata=metadata,
                     constraints=constraints,
                     synthetic_target_size=Dn,
-                    rejection_thresholds=reg_model_thresholds,
+                    rejection_thresholds=None,
                     n_splits=5,
                     n_repeats=cv_repeats,
                     random_state=GLOBAL_RANDOM_SEED,
@@ -657,18 +568,6 @@ def main():
                         run_sdv_model_with_aligned_metadata(mf, d, n, pfx, bm)
                     )
 
-                if use_cv_thresholds:
-                    if model_display_name == 'CART':
-                        cv_model_thresholds = rejection_thresholds
-                    else:
-                        cv_model_thresholds = rejection_thresholds.copy()
-                        cv_model_thresholds['Marginal'] = 0.35
-                        cv_model_thresholds['cov_score'] = 0.10
-                        cv_model_thresholds['corr_score'] = 0.10
-                        cv_model_thresholds['propensity_score'] = 0
-                else:
-                    cv_model_thresholds = None
-                
                 cv_summary, cv_folds = run_repeated_augmented_cv(
                     real_df=raw_df_for_cv,
                     target_column=target_column,
@@ -678,7 +577,7 @@ def main():
                     metadata=metadata,
                     constraints=constraints,
                     synthetic_target_size=Dn,
-                    rejection_thresholds=cv_model_thresholds,
+                    rejection_thresholds=None,
                     n_splits=5,
                     n_repeats=cv_repeats,
                     random_state=GLOBAL_RANDOM_SEED,
