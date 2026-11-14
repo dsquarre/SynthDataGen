@@ -58,5 +58,5 @@ plots/
 datasets/
 evaluation_report.xlsx
 sdv_metadata.json
-
+*.xlsx
 Danish_Dubey_UGP (1).pptx

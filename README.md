@@ -1,375 +1,77 @@
-# SynthDataGen
+# SynthDataGen: Rigorous Tabular Synthetic Data Generation & Cross-Validation Framework
 
-A tabular synthetic-data workflow that compares five generators (CART, Gaussian Copula, CTGAN, CopulaGAN, TVAE) across three imputation strategies. It covers metric-gated generation, global synthetic-quality evaluation, and fold-local augmented classification and regression benchmarking, with a real-only baseline in every CV fold for direct comparison.
+A robust, pipeline-driven framework designed to generate, gate, and evaluate tabular synthetic data under strict statistical thresholds. The architecture enforces zero-leakage, fold-local evaluation environments to benchmark synthetic data augmentation against real-world baselines using advanced classification and regression estimators.
 
-## Pipeline Flowchart
+##  Features
+
+### 1. Leakage-Free Fold-Local Isolation
+Unlike naive pipelines that generate synthetic data globally and cause data leakage into cross-validation folds, this framework implements **Strict Fold-Local Generation**:
+* **Train/Test Splitting:** Raw real data is split into `real_train` and `real_test` boundaries *prior* to synthesis.
+* **In-Fold Processing:** Missing value imputations and constraint parameters are fitted strictly on `real_train` and applied downstream to prevent target leakage.
+* **Isolated Generation:** Synthetic data is generated using models trained solely on `real_train`, ensuring the `real_test` fold remains completely untouched until final evaluation.
+
+### 2. Multi-Branch Parallel Imputation
+To isolate the effects of missing data structures on synthetic generation quality, the engine evaluates three parallel preprocessing pathways:
+* **`iter` (Iterative):** Multivariate, iterative feature modeling via `IterativeImputer`.
+* **`knn` (Instance-based):** Proximity-based imputation using `KNNImputer` (5 neighbors).
+* **`mi` (Indicator-driven):** Median/Mode imputation augmented with explicit `MissingIndicator` tracks, which are programmatically pruned post-generation to prevent metric pollution.
+
+### 3. Adaptive Gated Synthetic Sampling
+Implements a custom in-memory, threshold-gated generator matrix via an adaptive batching protocol loop:
+* **Dynamic Sizing:** Loops generation from `min_batch_size=500` to `max_batch_size=24000` rows.
+* **Multi-Metric Validation Gates:** Every synthetic batch must pass strict statistical validation thresholds against imputed real references across **Marginal distributions, Boundary constraints, Pearson/Spearman Correlations, and Covariance matrix alignment** before acceptance.
+* **Auto-Decay Budgets:** Monitors consecutive failures to gracefully decay acceptance tolerances down to an absolute floor ($0.01$).
+
+---
+
+## 📊 Metrics
+
+The framework runs an exhaustive, multi-dimensional quality analysis (`evaluate_all`) to profile the fidelity and privacy metrics of the generated distributions:
+
+| Dimension | Evaluation Metrics Implemented |
+| :--- | :--- |
+| **Statistical Fidelity** | Mean Kolmogorov-Smirnov (KS) complement, Total Variation (TV) complement, Wasserstein Distance (WD), Maximum Mean Discrepancy (MMD) with RBF kernels. |
+| **Structural Integrity** | Correlation Frobenius norms, Standardized Covariance norms, Matrix Boundary coverage ratios, Constraint Violation frequencies. |
+| **Generative Alignment** | Multivariate Fréchet Distance (Gaussian approximation), Gaussian Mixture Model (GMM) Log-Likelihood clustering, Propensity Scores ($1 - 2 \times \text{AUC}$). |
+| **Privacy Constraints** | Distance to Closest Real Record (`DCR_mean`/`DCR_min`), Nearest Neighbor Distance Ratio (`NNDR_mean`). |
+
+---
+
+## Pipeline Architecture
 
 ```mermaid
-flowchart TD
-    A([Start: run_all.py]) --> B[Load CSV/Excel from datasets/]
-    B --> C[Drop first column\nSanitize column names]
-    C --> D[Interactive: Drop columns by index]
-    D --> E[Dn = max len_df, 500]
-    E --> F[Auto-generate metadata\nnumerical / categorical]
-    F --> G[Interactive: Edit metadata types]
-    G --> H[Input: ROS target column index\nor -1 to skip classification CV]
-    H --> I[Input: Regression target column index\nor -1 to skip regression CV]
-    I --> J[Save sdv_metadata.json]
-    J --> K[impute_categorical_rf\nFill categorical NaNs via RandomForestClassifier\ntrained on numeric columns only]
-    K --> L[Create 3 imputed datasets\niter = IterativeImputer\nknn = KNNImputer\nmi = median/mode + MissingIndicator columns]
-    L --> M[Build constraints\nauto min/max per numeric column\n+ interactive custom constraints]
-    M --> N[Input: rejection thresholds\ndefaults: Marginal>=0.70, boundary>=0.99\ncorr>=0.65, cov>=0.40\nviolation<=0.001, propensity>=0.10]
-    N --> O[Input: CV repeats\ndefault 3]
-    O --> P{For each imputation\niter / knn / mi}
-
-    P --> Q[If ROS target set:\napply ROS to imputed real data\nbefore fitting generators]
-    Q --> R[Update metadata for branch\nadd MI indicator cols if present]
-    R --> S[For each generator: CART, GaussianCopula,\nCTGAN, CopulaGAN, TVAE\ngenerate_valid_samples_adaptive\nper-model thresholds\nmin_batch=500 max_batch=24000\nmax_total=120x Dn max_fails=60 floor=0.01]
-
-    S --> T{Batch generation loop}
-    T --> U[Generate batch in memory\nfresh seed per call]
-    U --> V[Apply ROS to batch\nif ROS target set]
-    V --> W[drop_constraint_violators]
-    W --> X{evaluate_threshold_gate\nvs imputed real reference}
-    X -->|Fail: any metric below threshold| Y[Increment failed_attempts\nDecay acceptance rate estimate\nretry if budget remains]
-    Y --> T
-    X -->|Pass: all metrics pass| Z[Accumulate valid rows]
-    Z --> T
-    T -->|Target rows reached| AA[Trim to exactly Dn rows\nreset_index]
-
-    AA --> AB[MI cleanup:\nremove indicator columns from\nreal frame, outputs, metadata]
-    AB --> AC[evaluate_all\ncompute quality metrics vs imputed real\nMarginal boundary corr cov\nviolation DCR NNDR WD MMD\nFrechet log-cluster propensity\nPCA plot per pair]
-    AC --> AD[Accumulate batch_results\nImputation + Generator fields]
-
-    AD --> AE{Regression target\nprovided?}
-    AE -->|Yes| AF[run_repeated_augmented_regression_cv\nRepeatedKFold 5-fold x cv_repeats\nfold-local, once per generator]
-    AF --> AG{For each regression fold}
-    AG --> AH[Split real into train fold + test fold]
-    AH --> AI[Generate fold-capped synthetic rows\nsize=min Dn, ceil ratio*len real_train\nfrom train fold only\ngate vs same train fold]
-    AI --> AJ[Build 2 training scenarios\nper fold]
-    AJ --> AK[Scenario A: Augmented\ntrain on real_train + synthetic_fold]
-    AJ --> AL[Scenario B: Real Only baseline\ntrain on real_train only]
-    AK --> AM[_prepare_regression_features\nfillna get_dummies align]
-    AL --> AM
-    AM --> AN[Train XGBRegressor + RandomForestRegressor\nfor each scenario]
-    AN --> AO[Evaluate both on same\nuntouched real test fold\nMAE RMSE R2 MAPE]
-    AO --> AG
-    AG --> AP[Aggregate folds to summary\nmean + std per Imputation/Regressor/Evaluation]
-    AP --> AE
-
-    AE --> AQ{ROS target\nprovided?}
-    AQ -->|Yes| AR[run_repeated_augmented_cv\nRepeatedStratifiedKFold 5-fold x cv_repeats\nfold-local, once per generator]
-    AR --> AS{For each classification fold}
-    AS --> AT[Split real into train fold + test fold]
-    AT --> AU[Generate fold-capped synthetic rows\nsize=min Dn, ceil ratio*len real_train\nfrom train fold only\ngate vs same train fold]
-    AU --> AV[Apply ROS separately:\nreal_train_ros + synthetic_ros]
-    AV --> AW[2 scenarios per fold\nAugmented: real_train_ros + synthetic_ros\nReal Only: real_train_ros]
-    AW --> AX[_prepare_classification_data\nfillna get_dummies align LabelEncode]
-    AX --> AY[Train RandomForestClassifier + XGBClassifier\nfor each scenario]
-    AY --> AZ[Evaluate both on same\nuntouched real test fold\naccuracy balanced_acc f1_macro roc_auc]
-    AZ --> AS
-    AS --> BA[Aggregate folds to summary\nmean + std per Imputation/Model/Evaluation/Classifier]
-    BA --> AQ
-
-    AQ --> P
-
-    P --> BB[Combine all_results across 3 imputations]
-    BB --> BC[Write evaluation_report.xlsx]
-    BC --> BD[save_metric_comparison_plots\n1 bar chart per metric per generator\nimputation comparison\nsaved to plots/]
-
-    BB --> BE{CV summary frames\nnon-empty?}
-    BE -->|Yes| BF[Write augmented_cv_report.xlsx\nsheets: summary + fold_scores]
-    BF --> BG
-
-    BE -->|No| BG{Regression summary\nnon-empty?}
-    BG -->|Yes| BH[Write regression_report.xlsx\nsheets: summary + fold_scores]
-    BH --> BI[save_regression_metric_plots\n1 figure per metric\n2 subplots: XGBoost left RF right\ngrouped bars: Real Only vs Augmented\nper imputation in plots/]
-    BI --> BJ
-
-    BG -->|No| BJ([Done])
-
-    style A fill:#2e7d32,color:#fff
-    style BJ fill:#2e7d32,color:#fff
-    style Y fill:#b71c1c,color:#fff
-    style X fill:#e65100,color:#fff
-    style AF fill:#1565c0,color:#fff
-    style AR fill:#1565c0,color:#fff
-    style AA fill:#6a1b9a,color:#fff
+graph TD
+    A[Start: run_all.py] --> B[Load & Sanitize Target Data]
+    B --> C[Initial Categorical Repair via Random Forest]
+    C --> D[Branching Imputations: Iterative / KNN / Missing Indicator]
+    D --> E[Compute Constraints & Prompt Threshold Gates]
+    E --> F[Adaptive CART Batch Generation Loop]
+    F --> G{Threshold Gate Verification}
+    G -- Fail --> H[Increment Fails & Decay Acceptance Floor]
+    H --> F
+    G -- Pass --> I[Accumulate and Trim to Target Size Dn]
+    I --> J[Run Fold-Local Augmented Regression / Classification CV]
+    J --> K[Output Excel Metric Reports & Comparative Plots]
 ```
 
-## Installation
-
-1. Clone the repository.
-2. Install the required dependencies:
-
-```bash
-pip install -r requirements.txt
-```
+---
 
 ## Usage
 
-1. Place your dataset (CSV or Excel) in the `datasets/` folder.
-2. Run the main script:
-
+### Prerequisites & Installation
+Ensure you have working C++ compilers for tree-based packages, then set up the repository:
+```bash
+git clone https://github.com
+cd SynthDataGen
+pip install -r requirements.txt
+```
+Place your tabular files inside the `datasets/` folder and boot the automated runner:
 ```bash
 python run_all.py
 ```
 
-3. During execution, the script will ask for:
-    - a dataset file name from `datasets/`
-    - optional column indices to drop
-    - metadata edits (`n` for numerical, `c` for categorical)
-    - a ROS target column index for class balancing and augmented classification evaluation (`-1` to skip)
-    - a regression output column index for repeated-CV regression evaluation (`-1` to skip)
-    - optional custom constraint expressions such as `c0 > c1 * 1.5`
-    - optional reconstruction formulas (derived columns recomputed from others)
-    - optional metric rejection thresholds as `metric=value` (unknown metric names are rejected)
-    - the number of repeated CV repeats (default `3`)
-    - fold synthetic size mode for CV:
-      - `1` = 1:1 with train fold (`min(Dn, ceil(ratio × len(real_train)))`)
-      - `2` = full `Dn` synthetic rows per fold
-    - whether to apply the metric-threshold gate during CV generation (`y/N`, default off)
-
-`input.txt` holds a saved set of answers; `python run_all.py < input.txt` replays them.
-
-## Generators
-
-| Generator | Family | Source |
-|-----------|--------|--------|
-| `CART` | Sequential decision trees (fully conditional specification) | Custom port of R `synthpop` (Nowok, Raab & Dibben, 2016) in `synthpop/` |
-| `Gaussian Copula` | Classical statistical model | SDV `GaussianCopulaSynthesizer` |
-| `CTGAN` | Conditional GAN for mixed-type tables | SDV `CTGANSynthesizer` (Xu et al., NeurIPS 2019) |
-| `CopulaGAN` | CTGAN with copula-based marginal transforms | SDV `CopulaGANSynthesizer` |
-| `TVAE` | Variational autoencoder for tables | SDV `TVAESynthesizer` (Xu et al., NeurIPS 2019) |
-
-The set spans tree-based, copula, GAN and VAE generators. All SDV models use library defaults (no tuning).
-
-## Current Pipeline
-
-### 1. Data loading and cleanup
-
-- Reads CSV or Excel from `datasets/`.
-- Attempts to drop the first column automatically.
-- Sanitizes column names: spaces and special characters → `_`, leading and trailing underscores stripped.
-- Optionally drops user-selected columns by index.
-- Sets `Dn = max(len(df), 500)` as the fixed synthetic target size used everywhere.
-
-### 2. Metadata setup
-
-- Automatically infers each column as `numerical` or `categorical`.
-- Lets the user edit the inferred types interactively (`n` = numerical, `c` = categorical).
-- Saves the resulting schema to `sdv_metadata.json`.
-
-### 3. Initial categorical repair
-
-- Before the main imputations, missing categorical values are filled using a `RandomForestClassifier` trained only on available numerical columns (`impute_categorical_rf`).
-
-### 4. Imputation branches
-
-Three separate imputed versions of the real dataset are created in parallel:
-
-| Key | Method |
-|-----|--------|
-| `iter` | `IterativeImputer` (multivariate, iterative) |
-| `knn` | `KNNImputer` (5 neighbours) |
-| `mi` | Median/mode fill + `MissingIndicator` columns appended |
-
-### 5. Constraint construction
-
-- Auto-generates min/max constraints for every numerical column as pandas-eval expressions (`c0 >= min`, `c0 <= max`).
-- User can add custom cross-column constraints interactively (e.g. `c0 > c1 * 1.5`).
-- Constraints are enforced on synthetic rows only; the real data is never filtered.
-
-### 6. Configuration prompts
-
-- **Rejection thresholds** — default values shown; user can override any subset as `metric=value,...`:
-  - `Marginal >= 0.70`
-  - `boundary_score >= 0.99`
-  - `corr_score >= 0.65`
-  - `cov_score >= 0.40`
-  - `violation_rate <= 0.001`
-  - `propensity_score >= 0.10`
-- **CV repeats** — number of repeats for both classification and regression repeated k-fold (default `3`).
-- **Fold synthetic size mode (CV)** — choose how many synthetic rows are generated per fold:
-  - `1` (default): 1:1 with train fold (capped by `Dn`)
-  - `2`: full `Dn` rows per fold
-
-### 7. Per-imputation loop (runs for `iter`, `knn`, `mi`)
-
-The following steps execute once per imputation branch.
-
-#### 7a. Pre-generation ROS
-
-If a ROS target column was provided, `apply_ros` is called on the imputed real data before any generator sees it. This balances class counts in the reference data going into the generator.
-
-#### 7b. Metadata sync
-
-The branch-specific metadata is updated to include any extra columns added by `mi` (missing-indicator columns).
-
-#### 7c. Global adaptive generation (each generator)
-
-For every generator, `generate_valid_samples_adaptive` runs a capped batch loop. Each batch re-fits the generator on the imputed real data. All generators (CART included) are seeded per call from one master stream (`seeding.py`, base seed 2026), so a run is reproducible and successive batches differ.
-
-**Per-model thresholds (current values in `run_all.py`).** The SDV models are gated more loosely than CART:
-
-| Metric | CART (default) | CTGAN | Gaussian Copula, CopulaGAN, TVAE |
-|--------|----------------|-------|----------------------------------|
-| `Marginal` | 0.70 | 0.70 | 0.15 |
-| `corr_score` | 0.65 | 0.20 | 0.15 |
-| `cov_score` | 0.40 | 0.10 | 0.10 |
-| `propensity_score` | 0.10 | 0 | 0 |
-
-Other thresholds (`boundary_score`, `violation_rate`) are shared. Inside CV (when CV gating is on), non-CART models use `Marginal 0.35`, `corr 0.10`, `cov 0.10`, `propensity 0`; for regression CV, `corr 0.18`, `cov 0.20` with the propensity threshold removed for all models. Because the gates differ, the gated quality metrics are not a like-for-like comparison across generators.
-
-Loop settings:
-
-| Parameter | Value |
-|-----------|-------|
-| `min_batch_size` | 500 |
-| `max_batch_size` | 24000 |
-| `max_total_generated_multiplier` | 120 × Dn |
-| `max_failed_attempts` | 60 consecutive failed batches |
-| `acceptance_rate_floor` | 0.01 |
-| `model_retry_attempts` | 3 full generation retries before skipping model |
-| `fold_synthetic_ratio` | 1.0 (per-fold synthetic cap for CV) |
-| `use_full_fold_synthetic_target` | `False` by default (`True` when CV mode `2` is selected) |
-
-Per batch:
-1. The generator produces a batch in memory (no per-batch file writes).
-2. If ROS target set, `apply_ros` is applied to the synthetic batch.
-3. `drop_constraint_violators` removes rows breaking any constraint.
-4. `evaluate_threshold_gate` computes all quality metrics against the imputed real reference and checks every threshold.
-5. Batch is **rejected** if any metric fails → failed-attempt counter increments, acceptance-rate estimate decays.
-6. Batch is **accepted** → rows accumulated.
-7. Loop exits when accumulated rows ≥ `Dn`.
-8. Output is trimmed to **exactly `Dn` rows** (`iloc[:Dn].reset_index(drop=True)`) — all imputation branches produce identical row counts.
-9. Only the final post-gate datasets are persisted: `datasets/{imp}real_data.xlsx` and `datasets/{imp}{generator}_data.xlsx`.
-10. If generation still fails, each model gets up to 3 full retries before being skipped.
-
-#### 7d. MI cleanup
-
-For the `mi` branch, missing-indicator columns are stripped from the real frame, the generated outputs, and the metadata before any evaluation. This prevents indicator columns from leaking into metrics or downstream models.
-
-#### 7e. Global quality evaluation
-
-`evaluate_all` computes the following per real/synthetic pair and saves a PCA scatter plot:
-
-| Metric | Description |
-|--------|-------------|
-| `Marginal` | Mean KS complement (numerical) / TV complement (categorical) across columns |
-| `boundary_score` | Fraction of synthetic numerical values inside real min/max |
-| `corr_score` | Correlation matrix similarity (1 − normalised Frobenius norm) |
-| `cov_score` | Covariance matrix similarity (standardised, Frobenius norm) |
-| `violation_rate` | Fraction of synthetic rows violating constraints |
-| `DCR_mean` / `DCR_min` | Distance to closest real record (mean and minimum) |
-| `NNDR_mean` | Nearest-neighbour distance ratio (privacy check) |
-| `wd_score` | Mean Wasserstein distance across numerical columns |
-| `mmd_score` | Maximum Mean Discrepancy (RBF kernel) |
-| `fd_score` | Fréchet distance (multivariate Gaussian approximation) |
-| `log_cluster_score` | Mean log-likelihood of synthetic data under a GMM fitted on real data |
-| `propensity_score` | 1 − 2|AUC − 0.5| from an XGBoost real-vs-synthetic discriminator |
-
-Results accumulated with `Imputation` and `Generator` fields.
-
-#### 7f. Fold-local augmented regression CV (if regression target provided)
-
-`run_repeated_augmented_regression_cv` with `RepeatedKFold(n_splits=5, n_repeats=cv_repeats)`:
-
-For each fold:
-1. Split **raw real** into `real_train` / `real_test`.
-2. Perform imputation **inside the fold** (fit on `real_train`, apply to `real_train` and `real_test`) according to the current imputation branch (`iter`, `knn`, or `mi`).
-3. Recompute fold constraints from `real_train` (train-only numeric min/max) and append custom user constraints.
-4. Generate fold-capped synthetic rows from fold-imputed `real_train` only (`persist=False`), gated vs that same fold-imputed `real_train`.
-  - if mode `1`: per-fold target = `min(Dn, ceil(fold_synthetic_ratio × len(real_train)))`
-  - if mode `2`: per-fold target = `Dn`
-  - default `fold_synthetic_ratio = 1.0`
-5. For the regression generation gate, the `propensity_score` threshold is removed.
-6. Build **two training scenarios** evaluated against the same `real_test`:
-   - **Augmented**: `real_train + synthetic_fold`
-   - **Real Only** (baseline): `real_train` only
-7. `_prepare_regression_features`: fillna (median/mode), `get_dummies`, column alignment.
-8. Train fresh `XGBRegressor` + `RandomForestRegressor` for each scenario.
-9. Record `MAE`, `RMSE`, `R²`, `MAPE` for every combination of (fold, scenario, regressor).
-
-Summary aggregates mean ± std per `(Imputation, Synthetic_Model, Evaluation, Regressor)`.
-
-#### 7g. Fold-local augmented classification CV (if ROS target provided)
-
-`run_repeated_augmented_cv` with `RepeatedStratifiedKFold(n_splits=5, n_repeats=cv_repeats)`:
-
-For each fold:
-1. Split **raw real** (stratified) into `real_train` / `real_test`.
-2. Perform imputation **inside the fold** (fit on `real_train`, apply to `real_train` and `real_test`) according to `iter`, `knn`, or `mi`.
-3. Recompute fold constraints from `real_train` (train-only numeric min/max) and append custom user constraints.
-4. Generate fold-capped synthetic rows from fold-imputed `real_train` only (`persist=False`), gated vs that same fold-imputed `real_train`.
-  - if mode `1`: per-fold target = `min(Dn, ceil(fold_synthetic_ratio × len(real_train)))`
-  - if mode `2`: per-fold target = `Dn`
-  - default `fold_synthetic_ratio = 1.0`
-5. Apply `apply_ros` separately to `real_train` and `synthetic_fold`.
-6. Build **two training scenarios** evaluated against the same `real_test`:
-   - **Augmented** (`FoldLocal_TrainAugmented_TestReal`): `real_train_ros + synthetic_ros`
-   - **Real Only** baseline (`Real_Only_TestReal`): `real_train_ros` only
-7. `_prepare_classification_data`: fillna, `get_dummies`, align, `LabelEncoder`.
-8. Train fresh `RandomForestClassifier(n_estimators=300)` and `XGBClassifier(n_estimators=300, max_depth=4, lr=0.05)` for each scenario; binary or multiclass objective chosen automatically.
-9. Evaluate on untouched `real_test`: `accuracy`, `balanced_accuracy`, `f1_macro`, `roc_auc`.
-
-The baseline is only computed on folds where synthetic generation succeeded, so both scenarios always share the same folds. Summary aggregates mean ± std per `(Imputation, Synthetic_Model, Evaluation, Classifier)`.
-
-### 8. Output writing (after all 3 imputation branches complete)
-
-| File | Contents |
-|------|----------|
-| `datasets/{imp}real_data.xlsx` | Imputed real data used (per branch) |
-| `datasets/{imp}{generator}_data.xlsx` | Final global synthetic data (per branch and generator) |
-| `evaluation_report.xlsx` | All global quality metrics across branches |
-| `augmented_cv_report.xlsx` | Classification CV summary + fold scores (Augmented vs Real Only) |
-| `regression_report.xlsx` | Regression CV summary + fold scores (Augmented vs Real Only) |
-
-### 9. Plots
-
-| File (in `plots/`) | Contents |
-|--------------------|----------|
-| `{imp}{key}_PCA.png` | PCA scatter: real vs synthetic per imputation/model pair |
-| `{generator}_imputation_compare_{metric}.png` | Bar chart comparing `iter`/`knn`/`mi` on each quality metric, per generator |
-| `regression_compare_{metric}.png` | 2-subplot figure (XGBoost left, RandomForest right); grouped bars per imputation: **Real Only** (light blue) vs **Augmented** (dark blue), one per metric (MAE, RMSE, R², MAPE) |
-
-## What Is Global vs Fold-Local
-
-### Global (persisted)
-
-- `datasets/{imp}real_data.xlsx` and `datasets/{imp}{generator}_data.xlsx`
-- these are final post-gate datasets (exactly `Dn` synthetic rows), not raw generator batches
-- `evaluation_report.xlsx`
-- PCA plots and per-generator imputation-comparison metric plots
-
-### Fold-local only (not saved to disk)
-
-- Synthetic datasets generated inside classification CV folds
-- Synthetic datasets generated inside regression CV folds
-- `augmented_cv_report.xlsx` and `regression_report.xlsx` are written from the aggregated fold results, but the individual fold-level synthetic DataFrames are discarded after use
-
-## Active and Inactive Models
-
-### Active
-
-- `CART`, `Gaussian Copula`, `CTGAN`, `CopulaGAN`, `TVAE` — synthetic generation
-- `RandomForestClassifier` + `XGBClassifier` — classification evaluation
-- `XGBRegressor` + `RandomForestRegressor` — regression evaluation
-
-### Present but currently inactive
-
-- CTAB-GAN+ (`ctab_gan_plus.py` is an empty placeholder)
-
-## Reproducibility
-
-- Base seed `2026` for imputers, CV splits and classifiers/regressors. CART and the SDV generators draw a fresh seed per call from one stream seeded with 2026 (`seeding.py`).
-- Reproducibility of generated data assumes the same call order, the same library versions and CPU execution (GPU kernels in PyTorch are not fully deterministic).
-- `requirements.txt` is not version-pinned yet.
-
-## Notes
-
-- The first column of the loaded dataset is dropped automatically if possible.
-- `mi` indicator columns are temporary — they are removed before evaluation so they do not pollute metrics or downstream models.
-- SDV generators read their schema from `sdv_metadata.json`, which is rewritten for each imputation branch.
-- Synthetic row count is always exactly `Dn` for all imputation branches because `generate_valid_samples_adaptive` trims its output to `iloc[:Dn]` before returning.
-- The quality metrics in `evaluation_report.xlsx` are computed on batches that already passed a gate built from several of the same metrics, so those scores are inflated by selection.
+The interactive terminal will prompt you to configure:
+1. Column drops and explicit metadata overrides (`n` for numerical, `c` for categorical).
+2. Random Over-Sampling (ROS) indices for balancing highly skewed classification labels.
+3. Target regression parameters to initiate multi-model evaluation (`XGBRegressor` + `RandomForestRegressor`).
+4. Rejection threshold metrics to override baseline generative convergence criteria.
