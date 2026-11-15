@@ -22,57 +22,6 @@ def generate_metadata(df: pd.DataFrame) -> Dict[str, str]:
     return metadata
 
 
-def interactive_edit_metadata(metadata: Dict[str, str]) -> Dict[str, str]:
-    """Interactive CLI to edit metadata by index.
-
-    Commands:
-    - Enter an index number followed by a space and `n` or `c`, e.g. `3 n` to make column 3 numerical.
-    - Enter `done` to finish and return the edited metadata.
-    - Enter `show` to reprint the columns.
-    """
-    cols = list(metadata.keys())
-    def print_cols():
-        print("Current columns and types:")
-        for i, c in enumerate(cols):
-            print(f"{i}: {c} -> {metadata[c]}")
-
-    print_cols()
-    while True:
-        try:
-            s = input("Edit (index n/c), 'show', or 'done': ").strip()
-        except EOFError:
-            print("Input closed; finishing edits.")
-            break
-        if not s:
-            continue
-        if s.lower() == 'done':
-            break
-        if s.lower() == 'show':
-            print_cols()
-            continue
-        parts = s.split()
-        if len(parts) >= 2:
-            try:
-                idx = int(parts[0])
-                if idx < 0 or idx >= len(cols):
-                    print("Index out of range")
-                    continue
-            except ValueError:
-                print("First token must be an integer index or 'show'/'done'")
-                continue
-            cmd = parts[1].lower()
-            if cmd == 'n':
-                metadata[cols[idx]] = 'numerical'
-            elif cmd == 'c':
-                metadata[cols[idx]] = 'categorical'
-            else:
-                print("Unknown type command; use 'n' or 'c'")
-            print(f"Set {cols[idx]} -> {metadata[cols[idx]]}")
-        else:
-            print("Invalid command format; try '3 n' or 'show' or 'done'")
-    return metadata
-
-
 def convert_to_sdv_metadata(metadata: Dict[str, str], table_name: str = 'table') -> Dict[str, Any]:
     """Convert the simple metadata mapping to an SDV single-table metadata dict similar to sdv_metadata.json in this repo."""
     columns = {}

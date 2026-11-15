@@ -34,8 +34,13 @@ BASE = 'Real_Only_TestReal'
 sns.set_theme(style='whitegrid')
 
 
+NO_CAPTION = False
+
+
 def caption(fig, number, bold, body, y=0.035):
-    """Serif caption under the plot area, like the original figures."""
+    """Serif caption under the plot area, like the original figures (skipped with --no-caption)."""
+    if NO_CAPTION:
+        return
     text = textwrap.fill(f'Figure {number}: {bold}. {body}', 175)
     lines = text.split('\n')
     first, rest = lines[0], '\n'.join(lines[1:])
@@ -266,7 +271,10 @@ def main():
     ap.add_argument('--ratio-label', default='1:1')
     ap.add_argument('--compare-run')
     ap.add_argument('--compare-label', default='11:1')
+    ap.add_argument('--no-caption', action='store_true', help='omit the embedded caption (journal figures)')
     a = ap.parse_args()
+    global NO_CAPTION
+    NO_CAPTION = a.no_caption
     os.makedirs(a.out, exist_ok=True)
     ev = pd.read_excel(os.path.join(a.run, 'evaluation_report.xlsx'))
     summ = pd.read_excel(os.path.join(a.run, 'regression_report.xlsx'), 'summary')

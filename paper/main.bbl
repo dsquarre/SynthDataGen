@@ -1,0 +1,134 @@
+\begin{thebibliography}{25}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{{#1}}
+\providecommand{\urlprefix}{URL }
+\providecommand{\doi}[1]{\url{https://doi.org/#1}}
+\providecommand{\eprint}[2][]{\url{#2}}
+ \bibcommenthead
+
+\bibitem[{Breiman(2001)}]{breiman2001rf}
+Breiman L (2001) Random forests. Machine Learning 45:5--32
+
+\bibitem[{van Buuren and Groothuis-Oudshoorn(2011)}]{vanbuuren2011mice}
+van Buuren S, Groothuis-Oudshoorn K (2011) mice: Multivariate imputation by
+  chained equations in {R}. Journal of Statistical Software 45(3):1--67
+
+\bibitem[{Chen and Guestrin(2016)}]{chen2016xgboost}
+Chen T, Guestrin C (2016) {XGBoost}: A scalable tree boosting system. In:
+  Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge
+  Discovery and Data Mining, pp 785--794
+
+\bibitem[{Dubey et~al.(2026)Dubey, Jha, Singh, and Pathak}]{dubey2026icsri}
+Dubey D, Jha I, Singh J, et~al (2026) Synthetic data augmentation and robust
+  preprocessing for predicting cyclic response of {CFST} columns. In:
+  International Conference on Seismic Resilient Infrastructure (ICSRI-2026),
+  Indian Institute of Technology (BHU) Varanasi, 13--15 March 2026, abstract
+
+\bibitem[{Esteban et~al.(2017)Esteban, Hyland, and
+  R{\"a}tsch}]{esteban2017tstr}
+Esteban C, Hyland SL, R{\"a}tsch G (2017) Real-valued (medical) time series
+  generation with recurrent conditional {GAN}s. arXiv:1706.02633
+
+\bibitem[{Heusel et~al.(2017)Heusel, Ramsauer, Unterthiner, Nessler, and
+  Hochreiter}]{heusel2017fid}
+Heusel M, Ramsauer H, Unterthiner T, et~al (2017) {GAN}s trained by a two
+  time-scale update rule converge to a local {N}ash equilibrium. In: Advances
+  in Neural Information Processing Systems
+
+\bibitem[{Holm(1979)}]{holm1979}
+Holm S (1979) A simple sequentially rejective multiple test procedure.
+  Scandinavian Journal of Statistics 6(2):65--70
+
+\bibitem[{Kotelnikov et~al.(2023)Kotelnikov, Baranchuk, Rubachev, and
+  Babenko}]{kotelnikov2023tabddpm}
+Kotelnikov A, Baranchuk D, Rubachev I, et~al (2023) {TabDDPM}: Modelling
+  tabular data with diffusion models. In: Proceedings of the 40th International
+  Conference on Machine Learning, pp 17564--17579
+
+\bibitem[{Nosek et~al.(2018)Nosek, Ebersole, DeHaven, and
+  Mellor}]{nosek2018prereg}
+Nosek BA, Ebersole CR, DeHaven AC, et~al (2018) The preregistration revolution.
+  Proceedings of the National Academy of Sciences 115(11):2600--2606
+
+\bibitem[{Nowok et~al.(2016)Nowok, Raab, and Dibben}]{nowok2016synthpop}
+Nowok B, Raab GM, Dibben C (2016) synthpop: Bespoke creation of synthetic data
+  in {R}. Journal of Statistical Software 74(11):1--26
+
+\bibitem[{Ozbakkaloglu and Lim(2013)}]{ozbakkaloglu2013database}
+Ozbakkaloglu T, Lim JC (2013) Axial compressive behavior of {FRP}-confined
+  concrete: Experimental test database and a new design-oriented model.
+  Composites Part B: Engineering 55:607--634.
+  \doi{10.1016/j.compositesb.2013.07.025}
+
+\bibitem[{Patki et~al.(2016)Patki, Wedge, and Veeramachaneni}]{patki2016sdv}
+Patki N, Wedge R, Veeramachaneni K (2016) The synthetic data vault. In: 2016
+  IEEE International Conference on Data Science and Advanced Analytics (DSAA),
+  pp 399--410
+
+\bibitem[{Pedregosa et~al.(2011)Pedregosa, Varoquaux, Gramfort, Michel,
+  Thirion, Grisel, Blondel, Prettenhofer, Weiss, Dubourg, Vanderplas, Passos,
+  Cournapeau, Brucher, Perrot, and Duchesnay}]{pedregosa2011sklearn}
+Pedregosa F, Varoquaux G, Gramfort A, et~al (2011) Scikit-learn: Machine
+  learning in {P}ython. Journal of Machine Learning Research 12:2825--2830
+
+\bibitem[{Reiter(2005)}]{reiter2005cart}
+Reiter JP (2005) Using {CART} to generate partially synthetic public use
+  microdata. Journal of Official Statistics 21(3):441--462
+
+\bibitem[{Snoke et~al.(2018)Snoke, Raab, Nowok, Dibben, and
+  Slavkovic}]{snoke2018utility}
+Snoke J, Raab GM, Nowok B, et~al (2018) General and specific utility measures
+  for synthetic data. Journal of the Royal Statistical Society Series A:
+  Statistics in Society 181(3):663--688
+
+\bibitem[{Song et~al.(2024)Song, Zhang, and Lu}]{song2024fire}
+Song Z, Zhang C, Lu Y (2024) The methodology for evaluating the fire resistance
+  performance of concrete-filled steel tube columns by integrating conditional
+  tabular generative adversarial networks and random oversampling. Journal of
+  Building Engineering 97:110824. \doi{10.1016/j.jobe.2024.110824}
+
+\bibitem[{Thai(2022)}]{thai2022review}
+Thai HT (2022) Machine learning for structural engineering: A state-of-the-art
+  review. Structures 38:448--491
+
+\bibitem[{Thai et~al.(2020)Thai, Thai, Ngo, Uy, Kang, and Hicks}]{thai2021data}
+Thai HT, Thai S, Ngo T, et~al (2020) {CFST} columns database with 3,208 tests.
+  Mendeley Data, V1, \doi{10.17632/j3f5cx9yjh.1}
+
+\bibitem[{Thai et~al.(2021)Thai, Thai, Ngo, Uy, Kang, and
+  Hicks}]{thai2021reliability}
+Thai HT, Thai S, Ngo T, et~al (2021) Reliability considerations of modern
+  design codes for {CFST} columns. Journal of Constructional Steel Research
+  177:106482
+
+\bibitem[{Thai et~al.(2019)Thai, Thai, Uy, and Ngo}]{thai2019cfst}
+Thai S, Thai HT, Uy B, et~al (2019) Concrete-filled steel tubular columns: Test
+  database, design and calibration. Journal of Constructional Steel Research
+  157:161--181
+
+\bibitem[{Troyanskaya et~al.(2001)Troyanskaya, Cantor, Sherlock, Brown, Hastie,
+  Tibshirani, Botstein, and Altman}]{troyanskaya2001knn}
+Troyanskaya O, Cantor M, Sherlock G, et~al (2001) Missing value estimation
+  methods for {DNA} microarrays. Bioinformatics 17(6):520--525
+
+\bibitem[{Wilcoxon(1945)}]{wilcoxon1945}
+Wilcoxon F (1945) Individual comparisons by ranking methods. Biometrics
+  Bulletin 1(6):80--83
+
+\bibitem[{Xu et~al.(2020)Xu, Wang, Ren, Wu, and Ozbakkaloglu}]{xu2020racfst}
+Xu J, Wang Y, Ren R, et~al (2020) Performance evaluation of recycled aggregate
+  concrete-filled steel tubes under different loading conditions: Database
+  analysis and modelling. Journal of Building Engineering 30:101308.
+  \doi{10.1016/j.jobe.2020.101308}
+
+\bibitem[{Xu et~al.(2019)Xu, Skoularidou, Cuesta-Infante, and
+  Veeramachaneni}]{xu2019ctgan}
+Xu L, Skoularidou M, Cuesta-Infante A, et~al (2019) Modeling tabular data using
+  conditional {GAN}. In: Advances in Neural Information Processing Systems
+
+\bibitem[{Zhao et~al.(2021)Zhao, Kunar, Birke, and Chen}]{zhao2021ctabgan}
+Zhao Z, Kunar A, Birke R, et~al (2021) {CTAB-GAN}: Effective table data
+  synthesizing. In: Proceedings of the 13th Asian Conference on Machine
+  Learning, pp 97--112
+
+\end{thebibliography}

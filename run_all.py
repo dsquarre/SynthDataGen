@@ -1,9 +1,9 @@
-from metadata_manager import generate_metadata, interactive_edit_metadata, save_as_sdv_json
+from metadata_manager import generate_metadata, save_as_sdv_json
 import pandas as pd
 import numpy as np
+import argparse
+import json
 import os
-import ast
-import re
 from synthpop.synth import run_cart
 from sdv_all import run_copula_gan,run_ctgan, run_gaussian_copula, run_tvae
 from metrics import (
@@ -12,9 +12,10 @@ from metrics import (
     run_repeated_augmented_regression_cv,
     save_metric_comparison_plots,
     save_regression_metric_plots,
-    generate_valid_samples_adaptive
+    generate_valid_samples_adaptive,
+    apply_reconstruction_rules
 )
-from ros import add_constraints
+from ros import get_constraints
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import KNNImputer, IterativeImputer, MissingIndicator
 from sklearn.ensemble import RandomForestClassifier
@@ -56,135 +57,6 @@ def run_sdv_model_with_aligned_metadata(model_func, df: pd.DataFrame, num_rows: 
     save_as_sdv_json(aligned_metadata, path='sdv_metadata.json')
     return model_func(df, num_rows, output_prefix)
 
-
-def _normalize_formula_expression(expression: str) -> str:
-    return re.sub(r'(?<![\w.])(\d+)(?![\w.])', r'c\1', expression)
-
-
-def _evaluate_formula_expression(expression: str, reference_df: pd.DataFrame) -> pd.Series:
-    if reference_df.empty:
-        raise ValueError("Reference dataframe is empty.")
-
-    normalized_expr = _normalize_formula_expression(expression.strip())
-    node = ast.parse(normalized_expr, mode='eval')
-    column_refs = {f'c{i}': reference_df.iloc[:, i] for i in range(reference_df.shape[1])}
-
-    def _eval_ast(ast_node):
-        if isinstance(ast_node, ast.Expression):
-            return _eval_ast(ast_node.body)
-
-        if isinstance(ast_node, ast.BinOp):
-            left_val = _eval_ast(ast_node.left)
-            right_val = _eval_ast(ast_node.right)
-
-            if isinstance(ast_node.op, ast.Add):
-                return left_val + right_val
-            if isinstance(ast_node.op, ast.Sub):
-                return left_val - right_val
-            if isinstance(ast_node.op, ast.Mult):
-                return left_val * right_val
-            if isinstance(ast_node.op, ast.Div):
-                return left_val / right_val
-            if isinstance(ast_node.op, ast.Pow):
-                return left_val ** right_val
-            if isinstance(ast_node.op, ast.Mod):
-                return left_val % right_val
-
-            raise ValueError("Unsupported operator in formula.")
-
-        if isinstance(ast_node, ast.UnaryOp):
-            operand = _eval_ast(ast_node.operand)
-            if isinstance(ast_node.op, ast.UAdd):
-                return operand
-            if isinstance(ast_node.op, ast.USub):
-                return -operand
-            raise ValueError("Unsupported unary operator in formula.")
-
-        if isinstance(ast_node, ast.Name):
-            if ast_node.id not in column_refs:
-                raise ValueError(f"Unknown column reference '{ast_node.id}'.")
-            return column_refs[ast_node.id]
-
-        if isinstance(ast_node, ast.Constant) and isinstance(ast_node.value, (int, float)):
-            return float(ast_node.value)
-
-        raise ValueError("Unsupported expression syntax.")
-
-    evaluated = _eval_ast(node)
-    if np.isscalar(evaluated):
-        return pd.Series([evaluated] * len(reference_df), index=reference_df.index)
-    return pd.Series(evaluated, index=reference_df.index)
-
-
-def collect_reconstruction_formulas(reference_df: pd.DataFrame):
-    print("\nOptional: define reconstruction formulas to add derived columns in exported files.")
-    print("Enter a formula expression, then provide the new column name.")
-    print("You can also use shorthand '<new_column>=<formula>'.")
-    print("Examples: 12/13, c12/(c13+0.001), ratio=12/13")
-    print("Note: integer tokens are treated as column indices. Type 'done' when finished.")
-
-    rules = []
-    auto_idx = 1
-
-    while True:
-        user_input = input("Formula expression (or 'done'): ").strip()
-        if not user_input:
-            continue
-        if user_input.lower() == 'done':
-            break
-
-        if '=' in user_input:
-            target_column, expression = user_input.split('=', 1)
-            target_column = target_column.strip()
-            expression = expression.strip()
-        else:
-            expression = user_input
-            default_name = f"derived_{auto_idx}"
-            target_column = input(
-                f"New column name (default: {default_name}): "
-            ).strip() or default_name
-
-        if not target_column or not expression:
-            print("Invalid formula. Please provide both target column and expression.")
-            continue
-
-        try:
-            preview_series = _evaluate_formula_expression(expression, reference_df)
-        except Exception as exc:
-            print(f"Failed to parse formula '{user_input}': {exc}")
-            continue
-
-        if np.isinf(preview_series.to_numpy(dtype=float, na_value=np.nan)).any():
-            print(f"Warning: formula '{target_column}={expression}' produced infinity values in preview.")
-
-        rules.append({'target_column': target_column, 'expression': expression})
-        auto_idx += 1
-        print(f"Stored formula: {target_column} = {expression}")
-
-    if rules:
-        print(f"Captured {len(rules)} reconstruction formula(s).")
-    else:
-        print("No reconstruction formulas captured.")
-
-    return rules
-
-
-def apply_reconstruction_formulas(df: pd.DataFrame, rules):
-    if not rules:
-        return df
-
-    base_reference = df.copy()
-    enriched_df = df.copy()
-
-    for rule in rules:
-        target_column = rule['target_column']
-        expression = rule['expression']
-        try:
-            enriched_df[target_column] = _evaluate_formula_expression(expression, base_reference)
-        except Exception as exc:
-            print(f"Warning: could not apply reconstruction formula '{target_column}={expression}': {exc}")
-
-    return enriched_df
 
 def impute_categorical_rf(df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
     df_imputed = df.copy()
@@ -310,96 +182,79 @@ def generate_valid_samples(
     )
 
 
+def load_config(path: str) -> dict:
+    """Read a run configuration (see configs/racfst.json). Columns are referred to by name."""
+    with open(path, encoding='utf-8') as fh:
+        cfg = json.load(fh)
+    required = ['data', 'regression_target']
+    missing = [k for k in required if k not in cfg]
+    if missing:
+        raise ValueError(f'config {path} is missing {missing}')
+    return cfg
+
+
 def main():
-    # Ensure output directories exist
-    os.makedirs('datasets', exist_ok=True)
+    ap = argparse.ArgumentParser(description='Benchmark synthetic data generators on one dataset.')
+    ap.add_argument('--config', required=True, help='JSON run configuration, e.g. configs/racfst.json')
+    ap.add_argument('--fold-synthetic', choices=['ratio', 'full'],
+                    help="override config: 'ratio' = fold_synthetic_ratio x training fold, "
+                         "'full' = global_synthetic_rows per fold")
+    ap.add_argument('--project-root', default=os.path.dirname(os.path.abspath(__file__)),
+                    help='paths in the config are relative to this directory')
+    args = ap.parse_args()
+    cfg = load_config(args.config)
+
+    # Outputs go to the current directory (run from a dedicated run folder).
     os.makedirs(GENERATED_DIR, exist_ok=True)
     os.makedirs('plots', exist_ok=True)
 
-    filename = input("Enter dataset filename in datasets/ folder (default: data.csv): ").strip()
-    if not filename:
-        filename = 'data.csv'
+    filepath = os.path.join(args.project_root, cfg['data'])
+    print(f"Loading {filepath}...")
+    df = pd.read_excel(filepath) if filepath.lower().endswith(('.xls', '.xlsx')) else pd.read_csv(filepath)
+    if cfg.get('id_column'):
+        df = df.drop(columns=[cfg['id_column']])
+    df = df.drop(columns=cfg.get('drop_columns', []))
+    print(f"Columns: {list(df.columns)}")
 
-    filepath = os.path.join('datasets', filename)
-    if not os.path.exists(filepath):
-        print(f"Error: File '{filepath}' not found.")
-        return
+    reconstruction_rules = [{'target_column': k, 'expression': v} for k, v in cfg.get('derived', {}).items()]
+    for rule in reconstruction_rules:
+        print(f"Derived column: {rule['target_column']} = {rule['expression']}")
+    apply_reconstruction_rules(df.head(), reconstruction_rules)  # fail early on a bad formula
 
-    print(f"Loading {filename}...")
-    if filename.lower().endswith(('.xls', '.xlsx')):
-        df = pd.read_excel(filepath)
-    else:
-        df = pd.read_csv(filepath)
-
-    try:
-        df.drop(columns=df.columns[0], inplace=True)
-    except Exception:
-        pass
-    print("\nAvailable columns:")
-    for i, col in enumerate(df.columns):
-        print(f"{i}: {col}")
-    df.columns = df.columns.str.strip()
-    df.columns = ["".join(c if c.isalnum() else "_" for c in str(x)) for x in df.columns]
-    # Remove leading underscores
-    df.columns = [col.lstrip('_') for col in df.columns]
-    # Remove trailing underscores
-    df.columns = [col.rstrip('_') for col in df.columns]
-
-    drop_indices = input("\nEnter column indices to drop (comma-separated) or press Enter to continue: ").strip()
-    if drop_indices:
-        try:
-            indices = [int(x.strip()) for x in drop_indices.split(',') if x.strip()]
-            cols_to_drop = [df.columns[i] for i in indices if 0 <= i < len(df.columns)]
-            if cols_to_drop:
-                print(f"Dropping: {cols_to_drop}")
-                df.drop(columns=cols_to_drop, inplace=True)
-        except ValueError:
-            print("Invalid input. No columns dropped.")
-
-    print("\nColumns after drop:")
-    for i, col in enumerate(df.columns):
-        print(f"{i}: {col}")
-
-    reconstruction_rules = collect_reconstruction_formulas(df)
-
-    Dn = max(len(df), 500)
+    Dn = max(len(df), int(cfg.get('global_synthetic_rows', 500)))
     print(f"Target synthetic dataset size: {Dn}")
-    
-    print("Generating metadata...")
-    metadata = generate_metadata(df)
 
-    print("You can edit column types now. Use index and 'n' or 'c' (e.g. '3 n'). Type 'done' when finished.")
-    metadata = interactive_edit_metadata(metadata)
-    ros_index = int(input("Enter ROS target column index (or '-1' to skip ROS/classification evaluation): "))
-    target_column = df.columns[ros_index] if ros_index != -1 else None
-    regression_index = int(input("Enter regression output column index for regression models (or '-1' to skip regression): "))
-    regression_target_column = df.columns[regression_index] if regression_index != -1 else None
-    print("Saving SDV-compatible metadata to sdv_metadata.json")
+    metadata = generate_metadata(df)
+    for col in cfg.get('categorical', []):
+        metadata[col] = 'categorical'
+    for col in cfg.get('numerical', []):
+        metadata[col] = 'numerical'
+    print("Column types:", metadata)
+    target_column = cfg.get('class_column')
+    regression_target_column = cfg['regression_target']
+    for col in [target_column, regression_target_column]:
+        if col and col not in df.columns:
+            raise ValueError(f"column '{col}' from the config is not in the data")
     save_as_sdv_json(metadata, path='sdv_metadata.json')
 
     raw_df_for_cv = df.copy()
     df = impute_categorical_rf(df, metadata)
-    #print(df.head())
     imputations = {
-        'iter': iterative_imputation(df, metadata), 
-        'knn': knn_imputation(df, metadata), 
+        'iter': iterative_imputation(df, metadata),
+        'knn': knn_imputation(df, metadata),
         'mi': missing_indicator_imputation(df)
     }
-    
-    constraints = add_constraints(df)
 
-    repeats_input = input("Repeated 5-fold CV repeats (default: 3): ").strip()
-    try:
-        cv_repeats = int(repeats_input) if repeats_input else 3
-    except ValueError:
-        cv_repeats = 3
-
-    fold_target_mode_input = input(
-        "Fold synthetic size mode for CV ('1' = 1:1 with train fold, '2' = full Dn per fold, default: 1): "
-    ).strip().lower()
-    use_full_fold_synthetic_target = fold_target_mode_input in {'2', 'full', 'dn', 'all'}
-    fold_mode_label = 'full Dn per fold' if use_full_fold_synthetic_target else '1:1 with train fold'
-    print(f"Using fold synthetic sizing mode: {fold_mode_label}")
+    constraints = get_constraints(df, cfg.get('constraints'))
+    cv_repeats = int(cfg.get('cv_repeats', 3))
+    fold_mode = args.fold_synthetic or cfg.get('fold_synthetic', 'ratio')
+    use_full_fold_synthetic_target = fold_mode == 'full'
+    DEFAULT_GENERATION_SETTINGS['fold_synthetic_ratio'] = float(cfg.get('fold_synthetic_ratio', 1.0))
+    fold_mode_label = (f'{Dn} rows per fold' if use_full_fold_synthetic_target
+                       else f"{DEFAULT_GENERATION_SETTINGS['fold_synthetic_ratio']:g} x training fold")
+    print(f"Using fold synthetic sizing mode: {fold_mode_label}; CV 5-fold x {cv_repeats}")
+    with open('run_config_used.json', 'w', encoding='utf-8') as fh:
+        json.dump({**cfg, 'fold_synthetic': fold_mode}, fh, indent=2)
 
     all_results = []
     cv_summary_frames = []
@@ -488,16 +343,16 @@ def main():
                     if col in current_metadata:
                         del current_metadata[col]
 
-        reconstructed_eval_real = apply_reconstruction_formulas(imp_df_real, reconstruction_rules)
+        reconstructed_eval_real = apply_reconstruction_rules(imp_df_real, reconstruction_rules)
         reconstructed_outputs = {
-            key: apply_reconstruction_formulas(synth_df, reconstruction_rules)
+            key: apply_reconstruction_rules(synth_df, reconstruction_rules)
             for key, synth_df in outputs.items()
         }
         reconstructed_metadata = build_aligned_metadata_for_df(reconstructed_eval_real, current_metadata)
 
         for key, synth_df in outputs.items():
             generator_name = key.split('_')[0] if '_' in key else key
-            export_real_df = apply_reconstruction_formulas(imp_df_for_generation, reconstruction_rules)
+            export_real_df = apply_reconstruction_rules(imp_df_for_generation, reconstruction_rules)
             export_synth_df = reconstructed_outputs.get(key, synth_df)
             export_real_df.to_excel(os.path.join(GENERATED_DIR, f'{impute_name}real_data.xlsx'), index=True)
             export_synth_df.to_excel(os.path.join(GENERATED_DIR, f'{impute_name}{generator_name}_data.xlsx'), index=False)

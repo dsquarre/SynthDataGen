@@ -27,6 +27,7 @@ def main():
     ap.add_argument('summary')
     ap.add_argument('out')
     ap.add_argument('--number', default='14')
+    ap.add_argument('--no-caption', action='store_true', help='omit the embedded caption (journal figures)')
     a = ap.parse_args()
     s = pd.read_csv(a.summary)
     datasets = [d for d in DS_LABEL if d in set(s.dataset)]
@@ -60,14 +61,15 @@ def main():
                 ax.set_ylabel(f'{reg}\nmedian MAE change (%)')
     handles, labels = axes[0][0].get_legend_handles_labels()
     fig.legend(handles, labels, loc='upper center', ncol=5, frameon=False, bbox_to_anchor=(0.5, 0.995))
-    fig.tight_layout(rect=(0, 0.12, 1, 0.95))
+    fig.tight_layout(rect=(0, 0.01 if a.no_caption else 0.12, 1, 0.95))
     cap = (f'Figure {a.number}: Change in test MAE from 1:1 synthetic augmentation, by training size.',
            ' Median over 20 random train/test draws of (MAE augmented − MAE real-only) / MAE real-only; below zero '
            'means augmentation reduced error. Filled markers: Benefit or Harm under the pre-registered rule '
            '(|median| ≥ 5% and Holm-adjusted one-sided Wilcoxon p < 0.05); hollow: no detectable effect. '
            'Grey band: ±5%. The circular CFST panel was added after registration and is exploratory.')
-    fig.text(0.015, 0.09, cap[0], family=FONT, weight='bold', size=10.5, va='top', wrap=True)
-    fig.text(0.015, 0.06, cap[1].strip(), family=FONT, size=10, va='top', wrap=True)
+    if not a.no_caption:
+        fig.text(0.015, 0.09, cap[0], family=FONT, weight='bold', size=10.5, va='top', wrap=True)
+        fig.text(0.015, 0.06, cap[1].strip(), family=FONT, size=10, va='top', wrap=True)
     fig.savefig(a.out, dpi=DPI)
     print('wrote', a.out)
 

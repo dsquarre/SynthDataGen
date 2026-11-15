@@ -66,13 +66,17 @@ git clone https://github.com/dsquarre/SynthDataGen.git
 cd SynthDataGen
 pip install -r requirements.txt
 ```
-Place your tabular files inside the `datasets/` folder and boot the automated runner:
+Prepare a dataset once, then run the benchmark from a run folder with a JSON configuration:
 ```bash
-python run_all.py
+python scripts/prepare_racfst.py            # writes datasets/racfst_cyclic.xlsx (named columns)
+mkdir -p runs/my_run && cd runs/my_run
+python ../../run_all.py --config ../../configs/racfst.json                          # 1:1
+python ../../run_all.py --config ../../configs/racfst.json --fold-synthetic full    # fixed rows per fold
 ```
 
-The interactive terminal will prompt you to configure:
-1. Column drops and explicit metadata overrides (`n` for numerical, `c` for categorical).
-2. Random Over-Sampling (ROS) indices for balancing highly skewed classification labels.
-3. Target regression parameters to initiate multi-model evaluation (`XGBRegressor` + `RandomForestRegressor`).
-4. Repeated cross-validation settings and the augmentation ratio (1:1 with each training fold, or a fixed `Dn` rows per fold).
+The configuration (`configs/racfst.json`) refers to columns by name:
+1. `data`, `id_column` and optional `drop_columns`; `categorical` / `numerical` type overrides.
+2. `derived`: ratio columns rebuilt from their components after imputation and generation (e.g. `"w_c": "water_kgm3 / cement_kgm3"`).
+3. `constraints`: extra physical rules as pandas expressions over column names (min/max bounds are added automatically).
+4. `class_column` (class-balanced generation and classification check) and `regression_target`.
+5. `cv_repeats`, `fold_synthetic` (`ratio` or `full`), `fold_synthetic_ratio` and `global_synthetic_rows`.

@@ -4,6 +4,52 @@ Dated log of plans and decisions. Newest entry first.
 
 ---
 
+## 2026-11-14 (evening) — Journal manuscript; two input errors found in E0
+
+**Manuscript.** Target: Springer journal 41062 (believed to be *Innovative Infrastructure Solutions*; guidelines page
+not reachable, Springer Nature defaults used). LaTeX, sn-jnl template. Content rewritten from the ICSRI-2026 draft
+with the current results (56 RACFST records; ungated E0; ratio study; pre-registered E1 on FRP and rectangular
+CFST; circular CFST exploratory). Only the abstract was published at ICSRI-2026; the journal version must cite it.
+
+**Errors found while writing the methods (affect E0 and all earlier RACFST runs, not E1):**
+1. Ductility (mu) and damping (xi), both measured outputs of the cyclic test, were used as inputs when predicting
+   Pu. A designer would not know them before testing.
+2. The reconstruction formula `w_c=12/13` indexes the post-drop column list, where 12/13 is fy/n, not
+   Water/Cement (10/5). Every run added a mislabelled "w/c" column equal to fy/n.
+
+**E0-fixed (descriptive, not pre-registered):** E0 rerun with mu and xi dropped and w_c = Water/Cement, at 1:1 and
+11:1 (`runs/2026-11-14_E0fixed_*`). These runs replace the ungated E0 numbers in the paper and deck.
+
+**Superseded the same evening (user's request):** the interactive prompts and `input.txt` (column indices, index-based
+formulas) were a shortcut. Replaced by a one-time preparation step (`scripts/prepare_racfst.py` ->
+`datasets/racfst_cyclic.xlsx`, named columns; mu, xi, the source ratio columns and the all-zero RFA column removed)
+and a JSON run configuration (`configs/racfst.json`) that names the target, class column and derived ratios
+(w_c = water/cement, D_t = D/t, L_D = (2L/2)/D, i.e. L = half the reported 2L, at the user's request). Formulas and physical-bound constraints now refer to columns by name.
+In fold-local CV, derived ratios are now rebuilt after generation (before, they were computed first, fed to the
+generators and bounded like measured columns), which matches the global path. Imputation and generation stay inside
+each fold. The partial E0-fixed runs were stopped and deleted; E0 is rerun as `runs/2026-11-14_E0clean_*`.
+Source-data note: the A3 "L/D" column mixes 2L/D and L/D conventions (one specimen matches neither), so it is not used.
+
+**E0-clean result (2026-11-15, `runs/2026-11-14_E0clean_*`):** real-only MAE 4.97-6.60 kN (R2 0.72-0.88; lower than
+before, since mu and xi are no longer inputs). 1:1 lowered mean MAE in 4 of 30 settings (all XGBoost; CART with KNN
+and MI imputation, TVAE with iterative and KNN), by 1-9% (max 0.55 kN), but the augmented model won only 5-8 of 15
+folds (smallest two-sided paired Wilcoxon p = 0.39, uncorrected, descriptive). The other 26 rose by 1-60%. 11:1 worse
+in 30 of 30. Paper and deck (v4) rebuilt from these runs; wording changed from "never lowered" to "not consistently".
+
+**Series structure (found 2026-11-14 night; user chose: report as a limitation only).** The 56 RACFST tests form 7
+series (section, D, t). Quick real-only check: random 5x3 CV MAE about 5 kN, leave-one-series-out 33-39 kN. E0
+therefore measures prediction within known series. Reported in the paper's limitations with numbers from
+`scripts/racfst_series_check.py`; no grouped-CV augmentation analysis. The L/D definition changes real-only MAE by
+at most about 0.3 kN (2L/D and (2L/2)/D give identical tree-model predictions).
+
+**Open question for E1 (not yet decided):** the FRP inputs include ecu (ultimate axial strain) and eh,rup (hoop
+rupture strain), which are also measured at failure. The registered E1 used them; both arms (real-only and
+augmented) had the same inputs, so the verdicts answer the registered question, but the task is not a pre-test
+design prediction. A sensitivity run without these two columns would be a new analysis and should be registered
+(public commit) before it runs.
+
+---
+
 ## 2026-11-14 — Remove the statistical gate; training-size experiment on new datasets
 
 ### Decision: no statistical gate (made 2026-11-14)

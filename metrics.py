@@ -26,7 +26,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 import xgboost as xgb
 import warnings
 from plot import Plot
-from ros import apply_ros, drop_constraint_violators
+from ros import apply_ros, bound_constraints, drop_constraint_violators
 warnings.filterwarnings('ignore')
 
 METRIC_DIRECTIONS = {
@@ -46,7 +46,7 @@ METRIC_DIRECTIONS = {
 }
 
 DEFAULT_RANDOM_SEED = 2026
-AUTO_BOUND_PATTERN = re.compile(r'^\s*c\d+\s*(>=|<=)\s*[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?\s*$')
+AUTO_BOUND_PATTERN = re.compile(r'^\s*`[^`]+`\s*(>=|<=)\s*[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?\s*$')
 
 
 def _encode_train_test_categorical(train_df: pd.DataFrame, test_df: pd.DataFrame, metadata: dict, excluded_cols=None):
@@ -203,28 +203,23 @@ def _build_fold_constraints(train_df: pd.DataFrame, base_constraints: list):
     ]
 
     fold_constraints = []
-    for idx, col in enumerate(train_df.columns):
+    for col in train_df.columns:
         if pd.api.types.is_numeric_dtype(train_df[col]):
             col_min = train_df[col].min()
             col_max = train_df[col].max()
-            fold_constraints.append(f'c{idx} >= {col_min}')
-            fold_constraints.append(f'c{idx} <= {col_max}')
+            fold_constraints.extend(bound_constraints(col, col_min, col_max))
 
     fold_constraints.extend(custom_constraints)
     return fold_constraints
 
 
-def _normalize_formula_expression(expression: str) -> str:
-    return re.sub(r'(?<![\w.])(\d+)(?![\w.])', r'c\1', expression)
-
-
-def _evaluate_formula_expression(expression: str, reference_df: pd.DataFrame) -> pd.Series:
+def evaluate_formula(expression: str, reference_df: pd.DataFrame) -> pd.Series:
     if reference_df.empty:
         raise ValueError('Reference dataframe is empty.')
 
-    normalized_expr = _normalize_formula_expression(expression.strip())
-    parsed = ast.parse(normalized_expr, mode='eval')
-    column_refs = {f'c{i}': reference_df.iloc[:, i] for i in range(reference_df.shape[1])}
+    # Columns are referenced by name (e.g. 'water_kgm3 / cement_kgm3'), never by position.
+    parsed = ast.parse(expression.strip(), mode='eval')
+    column_refs = {col: reference_df[col] for col in reference_df.columns if isinstance(col, str)}
 
     def _eval_ast(ast_node):
         if isinstance(ast_node, ast.Expression):
@@ -273,7 +268,7 @@ def _evaluate_formula_expression(expression: str, reference_df: pd.DataFrame) ->
     return pd.Series(evaluated, index=reference_df.index)
 
 
-def _apply_reconstruction_rules(df: pd.DataFrame, reconstruction_rules=None) -> pd.DataFrame:
+def apply_reconstruction_rules(df: pd.DataFrame, reconstruction_rules=None) -> pd.DataFrame:
     if not reconstruction_rules:
         return df
 
@@ -286,7 +281,7 @@ def _apply_reconstruction_rules(df: pd.DataFrame, reconstruction_rules=None) -> 
         if not target_column or not expression:
             continue
         try:
-            reconstructed_df[target_column] = _evaluate_formula_expression(expression, base_reference)
+            reconstructed_df[target_column] = evaluate_formula(expression, base_reference)
         except Exception as exc:
             print(f"Warning: could not apply reconstruction formula '{target_column}={expression}': {exc}")
 
@@ -928,8 +923,8 @@ def run_repeated_augmented_cv(
             target_column=target_column,
             random_state=random_state
         )
-        real_train = _apply_reconstruction_rules(real_train, reconstruction_rules)
-        real_test = _apply_reconstruction_rules(real_test, reconstruction_rules)
+        # Bounds and generation use the base columns only; derived ratios are rebuilt afterwards,
+        # for the real and synthetic rows alike, so generators never have to learn the identities.
         fold_constraints = _build_fold_constraints(real_train, constraints)
         if use_full_synthetic_target:
             fold_target_size = synthetic_target_size
@@ -962,7 +957,9 @@ def run_repeated_augmented_cv(
             )
             continue
 
-        synthetic_fold = _apply_reconstruction_rules(synthetic_fold, reconstruction_rules)
+        real_train = apply_reconstruction_rules(real_train, reconstruction_rules)
+        real_test = apply_reconstruction_rules(real_test, reconstruction_rules)
+        synthetic_fold = apply_reconstruction_rules(synthetic_fold, reconstruction_rules)
 
         # ROS stays on the real training fold only (in-fold, after the split).
         # The synthetic fold is already class-balanced by the generator loop.
@@ -1098,8 +1095,8 @@ def run_repeated_augmented_regression_cv(
             target_column=target_column,
             random_state=random_state
         )
-        real_train = _apply_reconstruction_rules(real_train, reconstruction_rules)
-        real_test = _apply_reconstruction_rules(real_test, reconstruction_rules)
+        # Bounds and generation use the base columns only; derived ratios are rebuilt afterwards,
+        # for the real and synthetic rows alike, so generators never have to learn the identities.
         fold_constraints = _build_fold_constraints(real_train, constraints)
         if use_full_synthetic_target:
             fold_target_size = synthetic_target_size
@@ -1132,7 +1129,9 @@ def run_repeated_augmented_regression_cv(
             )
             continue
 
-        synthetic_fold = _apply_reconstruction_rules(synthetic_fold, reconstruction_rules)
+        real_train = apply_reconstruction_rules(real_train, reconstruction_rules)
+        real_test = apply_reconstruction_rules(real_test, reconstruction_rules)
+        synthetic_fold = apply_reconstruction_rules(synthetic_fold, reconstruction_rules)
 
         if target_column not in synthetic_fold.columns:
             continue

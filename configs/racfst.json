@@ -1,0 +1,20 @@
+{
+  "_comment": "RACFST cyclic benchmark (E0). Prepare the data once with scripts/prepare_racfst.py. Column names, not indices.",
+  "data": "datasets/racfst_cyclic.xlsx",
+  "id_column": "Specimen",
+  "categorical": [
+    "Section"
+  ],
+  "derived": {
+    "w_c": "water_kgm3 / cement_kgm3",
+    "D_t": "D_mm / t_mm",
+    "L_D": "L2_mm / (2 * D_mm)"
+  },
+  "constraints": [],
+  "class_column": "Section",
+  "regression_target": "Pu_kN",
+  "cv_repeats": 3,
+  "fold_synthetic": "ratio",
+  "fold_synthetic_ratio": 1.0,
+  "global_synthetic_rows": 500
+}

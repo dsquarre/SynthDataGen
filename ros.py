@@ -50,33 +50,28 @@ def drop_covariance_violators(real_df: pd.DataFrame, synth_df: pd.DataFrame, met
     
     return synth_df[valid_mask].copy()
 
-def get_constraints(real_df: pd.DataFrame):
-    """Extract min/max constraints for numerical columns from real data."""
-    constraints = []
-    for i, col in enumerate(real_df.columns):
-        if pd.api.types.is_numeric_dtype(real_df[col].dtype):
-            constraints.append(f'c{i} >= {real_df[col].min()}')
-            constraints.append(f'c{i} <= {real_df[col].max()}')
-    return constraints
+def bound_constraints(col, lo, hi):
+    """Physical-bound constraints for one numerical column, written by column name."""
+    return [f'`{col}` >= {lo}', f'`{col}` <= {hi}']
 
-def add_constraints(real_df: pd.DataFrame):
-    """Interactive loop to add custom constraints."""
-    con = get_constraints(real_df)
-    print("\nAdd constraints as an expression with column numbers (e.g., c0 > c1 * 1.5)")
-    while True:
-        ent = input("Enter constraint (or 'q' to exit): ").strip()
-        if ent.lower() == 'q':
-            break
-        if ent:
-            con.append(ent)
-    return con
+
+def get_constraints(real_df: pd.DataFrame, custom=None):
+    """Min/max bounds for every numerical column of real_df, plus optional custom constraints.
+
+    Custom constraints are pandas expressions that refer to columns by name, e.g. "`t_mm` < `D_mm`".
+    """
+    constraints = []
+    for col in real_df.columns:
+        if pd.api.types.is_numeric_dtype(real_df[col].dtype):
+            constraints.extend(bound_constraints(col, real_df[col].min(), real_df[col].max()))
+    return constraints + list(custom or [])
+
 
 def drop_constraint_violators(df: pd.DataFrame, constraints: list):
     """
-    Remove synthetic rows that violate constraints using Vectorized Pandas Eval.
+    Remove synthetic rows that violate constraints (pandas expressions over column names).
     """
     temp_df = df.copy()
-    temp_df.columns = [f'c{i}' for i in range(len(df.columns))]
     valid_mask = pd.Series(True, index=df.index)
     
     for con in constraints:
