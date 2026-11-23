@@ -4,6 +4,27 @@ Dated log of plans and decisions. Newest entry first.
 
 ---
 
+## 2026-11-23 — UG report revision; exploratory SHAP analysis
+
+**Reviewer requests for the UG report:** remove the explicit LLM statement, obtain the mandatory library plagiarism
+check, explain the input features with diagrams, and give point-wise structural takeaways with SHAP results in the
+conclusion. The LLM statement was removed from the UG report only; the journal manuscript keeps its disclosure.
+
+**SHAP (exploratory, not pre-registered; `scripts/racfst_shap.py`, `scripts/racfst_shap_checks.py`,
+`runs/2026-11-23_SHAP/`):** exact XGBoost TreeSHAP on held-out rows of the real-only E0 model, for three imputation
+branches, with random 5x3 CV and leave-one-series-out. It reproduces the published real-only MAE (6.36, 5.14, 4.97 kN).
+Expected signs for D, t, D/t, L/D, fy, fcu, r and w/c were written in the script before its first run, but were not
+registered with a third party.
+
+**Result:** t ranked first in all six analyses (49.6-65.0% of attribution), but each series has one t, so t also
+identifies the series. n ranked second or third and is the best-supported effect (positive within all 7 series,
+within-series Spearman 0.82). The D trend was opposite to expectation in all branches and is not interpreted. r, fcu,
+fy and member length could not be resolved from these 56 tests. Removing the engineered ratios produced no
+distinguishable change in MAE (smallest uncorrected p = 0.11). Leave-one-series-out R2 is -0.19 to -0.14, so the
+explanations do not support general design rules.
+
+---
+
 ## 2026-11-14 (evening) — Journal manuscript; two input errors found in E0
 
 **Manuscript.** Target: Springer journal 41062 (believed to be *Innovative Infrastructure Solutions*; guidelines page
